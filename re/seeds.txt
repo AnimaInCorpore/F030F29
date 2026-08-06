@@ -1,0 +1,142 @@
+# Aufgelöste indirekte Sprungziele in X.EXE.
+#
+# Format: SEG:OFF  # Begründung
+# Wird von tools/re/disasm.py über --seeds eingelesen.
+
+# ---------------------------------------------------------------------------
+# call word ptr cs:[bx-0x2BC6] bei 0000:D2DA
+# Tabellenbasis (0 - 0x2BC6) & 0xFFFF = 0xD43A, 7 Einträge.
+# Index kommt aus `and bl,0x0F / shl bl,1`.
+# Alle Handler prüfen cs:[0xD5C8] gegen 4 -> Grafikadapter-Klasse.
+# Das ist der Pixelformat-Dispatcher (CGA/Tandy/EGA/VGA), kein Entpacker.
+# ---------------------------------------------------------------------------
+0000:D524   # Eintrag 0 - ret, Leerslot
+0000:D448   # Eintrag 1 - cx=0x2000 (8 KB Plane)
+0000:D456   # Eintrag 2 - cx=0x2880
+0000:D496   # Eintrag 3 - cx=0x3C00, Bitplane-Expansion via rcr
+0000:D4C7   # Eintrag 4
+0000:D4F2   # Eintrag 5
+0000:D525   # Eintrag 6 - Kette: D448, D456, D448, D496
+
+# ---------------------------------------------------------------------------
+# jmp ax bei 0000:D2EE - `mov ax,0xD329` steht unmittelbar davor
+# ---------------------------------------------------------------------------
+0000:D329
+
+# ---------------------------------------------------------------------------
+# call word ptr [si] bei 0000:29D5
+# `mov si,0x29EF` bei 0x29CC. Tabelle wird bitweise durch AL gelaufen
+# (shl al,1 / jae skip), also max. 8 Einträge - Subsystem-Init-Maske.
+# Aufruf mit al=0xFF bei 0x004F -> alle Subsysteme.
+# ---------------------------------------------------------------------------
+0000:26F0   # Bit 3
+0000:26F5   # Bit 4
+0000:2836   # Bit 5
+0000:2916   # Bit 6
+0000:29B8   # Bit 7 - int 15h AX=0xC200, PS/2-Maus
+# Bits 0-2 zeigen auf 0x29DF (ret), Leerslots
+
+# ---------------------------------------------------------------------------
+# jmp ax bei 0000:5B8C - Textinterpreter, Steuercodes 0..9
+# `shl ax,1 / add ax,0x5BE6` mit ax = sign-extend(al-9), also Tabelle
+# rückwärts ab 0x5BE6: Code 9 -> 0x5BE6, Code 0 -> 0x5BD4.
+# Slots 2..8 sind kurze jmp-Trampoline, Slot 9 ist Code.
+# ---------------------------------------------------------------------------
+0000:5BD6   # Code 1 - pop bx / ret
+0000:5BA4   # Code 2
+0000:5BAC   # Code 3
+0000:5BB1   # Code 4
+0000:5BB8   # Code 5
+0000:5BBC   # Code 6
+0000:5BC1   # Code 7
+0000:5BCA   # Code 8
+0000:5BE6   # Code 9 - lodsb / xor ah,ah / shl ax,1 / mov dx,ax
+
+# ---------------------------------------------------------------------------
+# jmp bp bei 0000:5B92 - Glyphen-Renderer, per `mov bp,imm` vorgewählt
+# Zeichen 0x20..0x67 landen hier.
+# ---------------------------------------------------------------------------
+0000:58FB   # via 0x5B4C
+0000:5852   # via 0x5B51
+0000:599A   # via 0x5B56 und 0x5B6B
+
+# ---------------------------------------------------------------------------
+# jmp word ptr [bx] bei 0000:E4CC - Menü-Dispatcher
+#
+# Ablauf: `mov cl,N` setzt die Eintragszahl, `call 0xE49F` liest eine Taste
+# ('1'..'9','0' -> Index 0..9) und prüft mit `cmp al,cl`, dann dispatcht
+# `call 0xE4C5` über eine Tabelle, die INLINE hinter der Aufrufstelle liegt
+# (`pop bx / add bx,ax / jmp [bx]`).
+#
+# Drei Aufrufstellen, per Byte-Scan gefunden (tools/re/xref.py E4B9-E4CC).
+# ---------------------------------------------------------------------------
+
+# Aufrufstelle 0000:C561, Tabelle 0xC564, 7 Einträge.
+# Ende belegt: `jb 0xC572` bei 0xC55F macht 0xC572 zu Code.
+0000:C6C5
+0000:C58E
+0000:C5B4
+
+# Aufrufstelle 0000:D751, Tabelle 0xD754, 8 Einträge (`mov cl,8` bei 0xD74A).
+0000:D872
+0000:E199
+0000:DC02
+0000:E106
+0000:DCB5
+0000:D766
+0000:E6F3
+0000:74CA
+
+# Aufrufstelle 0000:E67D, Tabelle 0xE680, 7 Einträge.
+# Ende belegt: bei 0xE68E beginnt die Inline-String-Routine (`mov al,8`).
+0000:D676
+0000:874E
+0000:74E0
+0000:7051
+0000:6F0B
+0000:E6AB
+
+# ---------------------------------------------------------------------------
+# call word ptr [bx-0x70C4] bei 0000:8F26 -> Basis (0-0x70C4)&0xFFFF = 0x8F3C
+# 4 Einträge: ab 0x8F44 beginnt der erste Handler, das begrenzt die Tabelle.
+# ---------------------------------------------------------------------------
+0000:8F44
+0000:8F94
+0000:8F99
+0000:9312
+
+# ---------------------------------------------------------------------------
+# call word ptr [bx-0x5929] bei 0000:F263 -> Basis (0-0x5929)&0xFFFF = 0xA6D7
+# Index aus `mov bx,[0xA720] / shl bl,1`.
+# 13 Einträge: ab 0xA6F1 folgen 0x5C58, ASCII "00" und Nullen, keine Zeiger.
+# Alle 13 Ziele liegen in 0xA8F9..0xAE09, also plausibel zusammenhängend.
+# ---------------------------------------------------------------------------
+0000:A9BC
+0000:A93B
+0000:AE09
+0000:ADD3
+0000:ADE7
+0000:ADC2
+0000:ADF7
+0000:AD98
+0000:ADB0
+0000:A979
+0000:A95A
+0000:A8F9
+
+# ---------------------------------------------------------------------------
+# Ungelöst - kein fester Zielort:
+#
+# jmp si  bei 0000:5B60 / 0000:5B66
+#   Inline-String-Idiom: `pop si` holt die Rücksprungadresse als Zeiger auf
+#   einen direkt hinter dem call liegenden String, `jmp si` kehrt hinter das
+#   Stringende zurück. Ziel ist je Aufrufstelle verschieden.
+#   Stringende = Byte mit gesetztem Bit 7.
+#
+# jmp word ptr [bx] bei 0000:E4CC
+#   `pop bx / add bx,ax / jmp [bx]` - die Sprungtabelle liegt inline hinter
+#   jeder Aufrufstelle. Ziel ist je Aufrufstelle verschieden.
+#
+# lcall [0xFC14], 12 Stellen
+#   Zeigt aus X.EXE heraus auf ein nachgeladenes Overlay, siehe RE-NOTES.md.
+# ---------------------------------------------------------------------------

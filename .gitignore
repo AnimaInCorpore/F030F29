@@ -1,0 +1,18 @@
+# Build-Artefakte
+build/
+release/
+*.o
+*.lst
+hatari.log
+__pycache__/
+*.pyc
+
+# Originalspiel und alles daraus Abgeleitete.
+#
+# Das Repository enthaelt bewusst KEINE Spieldaten von Ocean / Digital Image
+# Design - weder das Original noch extrahierte, entpackte oder gerenderte
+# Fassungen davon. Nutzer bringen ihre eigene Kopie mit (siehe README).
+assets/
+re/resources/
+re/unpacked/
+re/listings/
