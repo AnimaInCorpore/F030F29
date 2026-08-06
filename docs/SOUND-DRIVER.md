@@ -276,6 +276,80 @@ values used by the game are `0xA0`, `0xB4`, `0xC8`, `0xDC` and `0xF0` — evenly
 spaced by 20, which suggests a pitch or period rather than an index into a
 sample bank. There are no samples in the overlay to index anyway.
 
+## Device back ends
+
+Everything device-specific goes through a table of **11 vectors at `0xBBD`**.
+Statically every entry is `0x059A`, which is a bare `ret` — the silent default.
+The table is filled at device selection time, at `0x0430`:
+
+```
+0430  mov  ax, si
+0432  shr  ax, 1        ; ax = device index
+0435  mov  [0x414], al  ; remember it
+0438  mov  cl, al
+043C  shl  dl, cl
+043E  mov  [0x1C8], dl  ; and as a bitmask
+0442  mov  cx, 0x17     ; 23 - the stride of one device table
+0445  mul  cl           ; ax = device * 23
+0447  shr  cx, 1        ; 11 words
+0449  mov  si, 0xBD3    ; base of the per-device tables
+044C  add  si, ax
+044E  mov  di, 0xBBD    ; the live vector table
+0451  rep  movsw
+0453  lodsb             ; plus one trailing byte
+```
+
+So each device table is 23 bytes: 11 vectors plus a byte. There are **exactly
+six devices**, and the count is not a guess — `0xBD3 + 6*23` is `0xC5D`, and the
+function dispatch table starts at `0xC5E`, so device 6 would run into it.
+
+| Device | Table | Trailing byte | Back end |
+|---:|---|---|---|
+| 0 | `0x0BD3` | `0x01` | silent — every vector is the `ret` stub |
+| 1 | `0x0BEA` | `0x01` | silent |
+| 2 | `0x0C01` | `0x01` | **AdLib / OPL2** |
+| 3 | `0x0C18` | `0x01` | silent |
+| 4 | `0x0C2F` | `0x06` | **AdLib / OPL2**, same vectors as device 2 |
+| 5 | `0x0C46` | `0x06` | **MPU-401**, the MT-32 path |
+
+Devices 2 and 4 share an identical vector set and differ only in that trailing
+byte, so it is a mode or voice count rather than a driver selector.
+
+Port usage settles which is which:
+
+| Back end | Range | Ports | Instrument table |
+|---|---|---|---|
+| AdLib | `0x06F6`-`0x0850` | `0x388`, 43 accesses | `0x115F` |
+| MPU-401 | `0x059B`-`0x06F5` | `0x331`, 3 accesses | `0x1237` |
+
+Slot 0 of each table is not a routine at all — it holds the address of the
+instrument table, which is why the handler behind slot 1 opens with
+`mov si, 0x115F`.
+
+### Vector slots
+
+| Slot | Address | Reached from |
+|---:|---|---|
+| 0 | `0xBBD` | instrument table address, not code |
+| 1 | `0xBBF` | pattern command `L`, and `0x03B0` |
+| 2 | `0xBC1` | five sites — the most used |
+| 3 | `0xBC3` | `jmp` at `0x01B2` |
+| 4 | `0xBC5` | effect start (function AH=5), and `0x0208` |
+| 5 | `0xBC7` | `0x03BC`, `0x03F5` |
+| 6 | `0xBC9` | `0x0132` |
+| 7 | `0xBCB` | `0x0249` |
+| 8 | `0xBCD` | **note-on**, from `0x0198` and `0x01FC` |
+| 9 | `0xBCF` | `0x0351` |
+| 10 | `0xBD1` | `0x03C0` |
+
+### PC speaker
+
+There is speaker code at `0x0850`-`0x08F8` using ports `0x42`, `0x43` and
+`0x61`, but it is **not** reachable through the vector table. It is called
+directly from `0x057A`, `0x0588` and `0x0594`, immediately before the silent
+stub. So the speaker is not one of the six selectable devices; how it is
+enabled has not been traced.
+
 ## For the port
 
 The Falcon side does not need any of this code. It needs the **interface**:
@@ -293,5 +367,14 @@ What the commands *mean* musically is still only partly known. They are
 identified by which channel field they write, not by their effect: `[di+0x0C]`
 and `[di+0x0D]` (written by `N`, `O` and `R`, 84 times) is most likely the
 pitch or frequency divisor, and `[di+0x21]`, `[di+0x1A]`, `[di+0x1D]` are
-envelope or instrument parameters. Pinning those down means following the
-device vectors `[0xBBF]`, `[0xBCD]` into the AdLib and MPU-401 back ends.
+envelope or instrument parameters.
+
+The device layer, though, is fully mapped, and that shapes the work: the DSP
+driver slots in as **a seventh device table** conceptually — eleven routines
+behind a vector table, of which note-on (slot 8), effect start (slot 4) and
+instrument load (slot 1) carry the load. The sequencer above it stays
+device-independent, exactly as the original is.
+
+The AdLib back end is the one to read for musical meaning, since it is the more
+thoroughly exercised of the two (43 port accesses against 3) and OPL2 register
+semantics are well documented. Its instrument table is at `0x115F`.
