@@ -22,33 +22,49 @@ version against 1037 in the textured one, and the DSP source 2301 lines against
 ## Measured frame rate
 
 A frame counter is incremented once per main-loop pass and read out of memory
-at two breakpoints, so the interval between them excludes startup:
+at two breakpoints, so the interval between them excludes startup.
 
-| | Frames | VBLs | VBLs/frame | fps at 50 Hz |
-|---|---:|---:|---:|---:|
-| VBL 1500 to 3000, model drawn | 293 | 1500 | 5.12 | **9.8** |
-| background restore only | 603 | ~2386 | ~3.96 | ~12.6 |
+| Backdrop | Frames, VBL 1500→3000 | VBLs/frame | fps at 50 Hz |
+|---|---:|---:|---:|
+| copied from a stored image | 293 | 5.12 | 9.8 |
+| **drawn as horizon runs** | **348** | **4.31** | **11.6** |
 
-The second row is not a clean isolation — with the model disabled nothing sets
-the dirty range, so `clear_screen4` falls through to a *full* background copy
-every frame, while the first row only restores the range the model touched. It
-is still the number that matters, because it bounds the whole approach:
+**+18.8 %**, and 153 KB of RAM back — the stored backdrop was
+`SCREEN_WIDTH*SCREEN_HEIGHT` words of BSS, the run table is 512 bytes. On a
+4 MB machine that matters as much as the frame rate.
 
-**Copying the 153,600-byte backdrop over the screen once per frame costs about
-four VBLs on its own, capping the frame rate near 12 fps before a single
-polygon is drawn.**
+The reasoning that led here: copying reads 153,600 bytes and writes as many
+again, while drawing only writes. An earlier isolation run with the model
+disabled put the full-screen copy at roughly four VBLs a frame on its own,
+which capped everything near 12 fps before a polygon was drawn.
 
-That is the bandwidth argument from [ARCHITECTURE.md](ARCHITECTURE.md) showing
-up as evidence rather than arithmetic, and it points at a fix that is specific
-to this game: a flight simulator does not need a *stored* backdrop. The horizon
-is two gradient bands that move with pitch and roll, and drawing them directly —
-blitter fills, one span per scanline — replaces a 153 KB copy with a few hundred
-register writes. That should be done before any judgement is made about whether
-true colour is affordable.
+The gain is smaller than halving the traffic would suggest, because the write
+side remains — 153,600 bytes still go out every frame — and each blitter run
+costs its own setup. Cutting that further means either not covering the whole
+screen, which a moving horizon makes awkward, or dropping to 8 bits per pixel,
+which halves the write traffic outright. That fallback is described in
+[ARCHITECTURE.md](ARCHITECTURE.md) and the rasterizer was structured to keep it
+a localised change.
 
 Caveat: this is Hatari, not hardware. It runs with `--cpu-exact` and
-`--compatible`, but Falcon bus contention and blitter timing are approximations.
-Treat the numbers as relative, not absolute.
+`--compatible`, but Falcon bus contention and blitter timing are
+approximations. Treat the numbers as relative, not absolute.
+
+### How the horizon is drawn
+
+Every gradient divides by a power of two, so the colour changes every fourth
+scanline at most. The table built at startup therefore holds *runs*, not lines:
+each entry is a word count and a colour, and one blitter run covers four
+scanlines of 320 pixels at once. That is about sixty blits a frame rather than
+240.
+
+The blit itself uses the same trick as the polygon filler: `Dst_Xinc` of 0 with
+`X_Count` of 1 turns `Y_Count` into a pixel count, so a run fills that many
+consecutive words from the halftone register. The halftone is loaded as eight
+longwords rather than sixteen words.
+
+`background`, `clear_screen`, `clear_screen2`, `clear_screen3` and
+`clear_screen4` are all gone with it — 142 lines removed.
 
 ## Files
 

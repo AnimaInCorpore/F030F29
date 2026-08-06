@@ -70,25 +70,34 @@ main
 
 ; -----------------------------------------------------------------------------
 
-; Sky and ground backdrop, generated once at startup.  The demo this engine
-; came from loaded a TGA here; a flight simulator wants a horizon, which costs
-; no asset and no space in the binary.
+; Horizon table, built once at startup.
+;
+; The backdrop is not stored as a picture and copied every frame - that costs a
+; 153,600 byte read plus the same again written, and measurement showed it
+; capping the frame rate near 12 fps on its own.  Instead the sky and ground are
+; drawn straight into the framebuffer, which is write-only traffic and half the
+; work.
+;
+; Because every gradient divides by a power of two, the colour only changes
+; every fourth scanline at most.  So the table holds runs, not lines: each entry
+; is a word count and a colour, and one blitter run covers four scanlines of
+; 320 pixels in one go.  That is about sixty blits a frame instead of 240.
 ;
 ; RGB565: red 15..11, green 10..5, blue 4..0.  The two bytes are assembled
-; separately, which keeps every shift within the 68k limit of eight and makes
-; the packing trivial to check by hand:
+; separately, which keeps every shift inside the 68k limit of eight and makes
+; the packing easy to check by hand:
 ;
 ;   high = (r << 3) | (g >> 3)
 ;   low  = ((g & 7) << 5) | b
-;
-; All the gradients divide by powers of two so the interpolation is a shift.
 
-	lea		background,a1
+	lea		horizon_table,a1
 	moveq	#0,d6						; line number
+	moveq	#-1,d7						; colour of the run in progress
+	sub.l	a2,a2						; words accumulated in it
 
-.bg_line
+.ht_line
 	cmp		#HORIZON_LINE,d6
-	bge		.bg_ground
+	bge		.ht_ground
 
 	move	d6,d1						; sky, t = 0..HORIZON_LINE-1
 	lsr		#3,d1
@@ -102,9 +111,9 @@ main
 	lsr		#4,d1
 	add		#20,d1						; blue  20..27
 	move	d1,d4
-	bra		.bg_pack
+	bra		.ht_pack
 
-.bg_ground
+.ht_ground
 	move	d6,d5
 	sub		#HORIZON_LINE,d5			; ground, t = 0..
 	move	d5,d1
@@ -120,7 +129,7 @@ main
 	move	#10,d4
 	sub		d1,d4						; blue  10..3
 
-.bg_pack
+.ht_pack
 	move.b	d2,d5
 	lsl.b	#3,d5						; r << 3
 	move.b	d3,d0
@@ -133,20 +142,30 @@ main
 	or.b	d4,d0						; | b
 	or.b	d0,d5						; -> the low byte
 
-; Two pixels per store: the line is a constant colour, so build a longword
-; once and write 160 of them instead of 320 words.
-	move	d5,d0
-	swap	d0
-	move	d5,d0
+	cmp		d7,d5						; same colour as the run in progress?
+	beq		.ht_extend
 
-	move	#SCREEN_WIDTH/2-1,d7
-.bg_fill
-	move.l	d0,(a1)+
-	dbf		d7,.bg_fill
+	move.l	a2,d0						; no - close the run off
+	beq		.ht_first
+	move	d0,(a1)+
+	move	d7,(a1)+
+.ht_first
+	sub.l	a2,a2
+	move	d5,d7
+
+.ht_extend
+	lea		SCREEN_WIDTH(a2),a2
 
 	addq	#1,d6
 	cmp		#SCREEN_HEIGHT,d6
-	blt		.bg_line
+	blt		.ht_line
+
+	move.l	a2,d0						; close the last run
+	beq		.ht_done
+	move	d0,(a1)+
+	move	d7,(a1)+
+.ht_done
+	clr		(a1)						; terminator
 
 ; -----------------------------------------------------------------------------
 
@@ -263,9 +282,9 @@ m_loop2
 	bsr		send_data
 
 ;	move.l	work_screen,a0
-;	bsr		clear_screen2
 
-	bsr		clear_screen4
+	move.l	work_screen,a0
+	bsr		draw_horizon
 
 	move.l	work_screen,a0
 	lea		buffer,a1
@@ -683,147 +702,63 @@ sd_loop2
 	rts
 
 ; -----------------------------------------------------------------------------
-; a0.l = Bildadresse
-
-clear_screen
-	cmp.b	#KEY_ESC,key_value
-	beq.s	cs_no_clr
-
-	add.l	#SCREEN_WIDTH*(SCREEN_HEIGHT-8)*2,a0
-	move	#(SCREEN_WIDTH*(SCREEN_HEIGHT-8)*2/480)-1,d7
-
-;	clr.l	d0
-	move	#((31*06/10)<<11)+((63*08/10)<<5)+(31*09/10),d0
-	move	d0,d1
-	swap	d0
-	move	d1,d0
-	move.l	d0,d1
-	move.l	d0,d2
-	move.l	d0,d3
-	move.l	d0,d4
-	move.l	d0,d5
-	move.l	d0,d6
-	move.l	d0,a1
-	move.l	d0,a2
-	move.l	d0,a3
-	move.l	d0,a4
-	move.l	d0,a5
-
-cs_loop1
-	movem.l	d0-d6/a1-a5,-(a0)
-	movem.l	d0-d6/a1-a5,-(a0)
-	movem.l	d0-d6/a1-a5,-(a0)
-	movem.l	d0-d6/a1-a5,-(a0)
-	movem.l	d0-d6/a1-a5,-(a0)
-	movem.l	d0-d6/a1-a5,-(a0)
-	movem.l	d0-d6/a1-a5,-(a0)
-	movem.l	d0-d6/a1-a5,-(a0)
-	movem.l	d0-d6/a1-a5,-(a0)
-	movem.l	d0-d6/a1-a5,-(a0)
-
-	dbra	d7,cs_loop1
-
-cs_no_clr
-	rts
-
+; Draw sky and ground straight into the framebuffer.
+;
+; a0.l = screen address
+;
+; Walks the run table built at startup - each entry a word count and a colour,
+; terminated by a zero count - and issues one blitter run per entry.  Dst_Xinc
+; of 0 with X_Count 1 turns Y_Count into a pixel count, so a run fills that many
+; consecutive words; the polygon filler uses the same trick.
+;
+; This replaces copying a stored backdrop.  The copy read 153,600 bytes and
+; wrote as many again, and measured at roughly four VBLs a frame on its own.
 ; -----------------------------------------------------------------------------
-; a0.l = Bildadresse
 
-clear_screen2
-	cmp.b	#KEY_ESC,key_value
-	beq.s	cs2_no_clr
-
-	lea		background,a6
-
-	move	#SCREEN_HEIGHT-1,d7
-
-.lines_loop
-	move	#SCREEN_WIDTH/20-1,d6
-
-.pixels_loop
-	rept 10
-	move.l	(a6)+,(a0)+
-	endr
-
-	dbra	d6,.pixels_loop
-
-	dbra	d7,.lines_loop
-
-cs2_no_clr
-	rts
-
-; -----------------------------------------------------------------------------
-; a0.l = Bildadresse
-
-clear_screen3
-	cmp.b	#KEY_ESC,key_value
-	beq.s	cs3_no_clr
-
-	move.l	#background,Src_Addr.w
-	move.l	a0,Dst_Addr.w
-
-	move	#2,Src_Xinc.w
-	move	#2,Src_Yinc.w
-
-	move	#2,Dst_Xinc.w
+draw_horizon
+	move.b	#%01,HOP.w					; source = halftone
+	move.b	#%0011,OP.w					; destination = source
+	move	#-1,Endmask1.w
+	move	#-1,Endmask2.w
+	move	#-1,Endmask3.w
+	move	#0,Dst_Xinc.w
 	move	#2,Dst_Yinc.w
+	move	#1,X_Count.w
 
-	move	#SCREEN_WIDTH,X_Count.w
-	move	#SCREEN_HEIGHT-8,Y_Count.w
+	lea		horizon_table,a1
+	lea		Halftone.w,a3
+	lea		Dst_Addr.w,a2
+	lea		Y_Count.w,a4
+	lea		Line_Num.w,a6
+	move.b	#%11000000,d6				; blitter start code
 
-	move	#$ffff,Endmask1.w
-	move	#$ffff,Endmask2.w
-	move	#$ffff,Endmask3.w
+.dh_run
+	moveq	#0,d0
+	move	(a1)+,d0					; words in this run
+	beq		.dh_done
 
-	move.b	#%10,HOP
-	move.b	#%0011,OP.w
-	clr.b	Skew.w
+	move	(a1)+,d1					; colour
+	move	d1,d2						; fill the halftone as longs -
+	swap	d2							; eight writes instead of sixteen
+	move	d1,d2
 
-	move.b	#%11000000,Line_Num.w
-
-cs3_no_clr
-	rts
-
-; -----------------------------------------------------------------------------
-
-clear_screen4
-	cmp.b	#KEY_ESC,key_value
-	beq		.skip
-
-	move.l	screen_low_high_work,d0
-	sub.l	#SCREEN_WIDTH*2,d0
-
-	move.l	screen_low_high_work+4,d1
-	bne		.clear
-
-	move.l	work_screen,a0
-
-	bra		clear_screen2
-
-.clear
-	lea		background,a0
-	
-	move.l	d0,d2
-	sub.l	work_screen,d2
-
-	lea		(a0,d2.l),a0
-	move.l	d0,a1
-
-.lines_loop
-	move	#SCREEN_WIDTH/20-1,d7
-
-.pixels_loop
-	rept 10
-	move.l	(a0)+,(a1)+
+	rept 8
+	move.l	d2,(a3)+
 	endr
+	lea		-32(a3),a3
 
-	dbra	d7,.pixels_loop
+	move.l	a0,(a2)						; destination
+	move	d0,(a4)						; pixel count
+	move.b	d6,(a6)						; go
 
-	cmp.l	d1,a1
-	bcs		.lines_loop
+	add.l	d0,d0						; words -> bytes
+	add.l	d0,a0
 
-.skip
+	bra		.dh_run
+
+.dh_done
 	rts
+
 
 ; -----------------------------------------------------------------------------
 ; a1.l = buffer
@@ -1119,8 +1054,11 @@ char_f
 frame_count
 	ds.l	1
 
-background
-	ds		SCREEN_WIDTH*SCREEN_HEIGHT
+; Run table for the horizon: word count and colour per entry, zero-terminated.
+; The colour changes every fourth line at most, so sixty entries suffice; the
+; allocation is generous because getting it wrong overruns into colour_table.
+horizon_table
+	ds.w	2*128
 
 colour_table
 	ds.w	32*32
