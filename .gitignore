@@ -16,3 +16,8 @@ assets/
 re/resources/
 re/unpacked/
 re/listings/
+
+# Hatari-Laufzeitartefakte im release-Verzeichnis
+*.ini
+*-dbg.txt
+frame.bin
