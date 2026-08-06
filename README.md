@@ -120,7 +120,11 @@ The reverse engineering is broad: the archive, the compression, the image,
 model and world formats and the sound driver are all decoded, and the
 disassembly reaches 44.6 % of `X.EXE`.
 
-The port itself has just started. The engine builds and renders at 320x240 true
-colour in Hatari; the flight model, game logic, HUD and menus are not written.
-The frame rate has not been measured, so the bandwidth argument behind the
-video-mode choice is still arithmetic rather than evidence.
+The port itself has just started. The engine builds and renders a flat-shaded
+model over a generated horizon at 320x240 true colour in Hatari, measured at
+**9.8 fps**; the flight model, game logic, HUD and menus are not written.
+
+That measurement already found the first real bottleneck, and it is not the one
+the arithmetic pointed at: copying the 153 KB backdrop over the screen each
+frame costs about four VBLs by itself, capping the rate near 12 fps before a
+polygon is drawn. See [ENGINE.md](docs/ENGINE.md).

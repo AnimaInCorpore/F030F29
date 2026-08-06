@@ -9,12 +9,46 @@ it.
 
 ## State
 
-It builds and runs. A headless frame grab in Hatari shows the 3D model
-rendering at 320x240 true colour with the generated ground gradient beneath it.
+It builds and runs. A headless frame grab in Hatari shows a flat-shaded model
+over a generated sky-and-ground horizon at 320x240 true colour.
 
-Not yet done: the sky half of the backdrop is wrong (task 14), and **the frame
-rate has not been measured**. The bandwidth question that shaped the whole
-video-mode decision is therefore still arithmetic rather than evidence.
+**Flat shading, not textured.** The engine came from `f030dsp3d`, and the
+version taken is commit `ee77bf2` — the one *before* texture mapping was added.
+F29 Retaliator is a flat-shaded game, so the textured pipeline is complexity
+with no purpose, and it is not cheap: `dp_hc.s` is 220 lines in the flat
+version against 1037 in the textured one, and the DSP source 2301 lines against
+2591.
+
+## Measured frame rate
+
+A frame counter is incremented once per main-loop pass and read out of memory
+at two breakpoints, so the interval between them excludes startup:
+
+| | Frames | VBLs | VBLs/frame | fps at 50 Hz |
+|---|---:|---:|---:|---:|
+| VBL 1500 to 3000, model drawn | 293 | 1500 | 5.12 | **9.8** |
+| background restore only | 603 | ~2386 | ~3.96 | ~12.6 |
+
+The second row is not a clean isolation — with the model disabled nothing sets
+the dirty range, so `clear_screen4` falls through to a *full* background copy
+every frame, while the first row only restores the range the model touched. It
+is still the number that matters, because it bounds the whole approach:
+
+**Copying the 153,600-byte backdrop over the screen once per frame costs about
+four VBLs on its own, capping the frame rate near 12 fps before a single
+polygon is drawn.**
+
+That is the bandwidth argument from [ARCHITECTURE.md](ARCHITECTURE.md) showing
+up as evidence rather than arithmetic, and it points at a fix that is specific
+to this game: a flight simulator does not need a *stored* backdrop. The horizon
+is two gradient bands that move with pitch and roll, and drawing them directly —
+blitter fills, one span per scanline — replaces a 153 KB copy with a few hundred
+register writes. That should be done before any judgement is made about whether
+true colour is affordable.
+
+Caveat: this is Hatari, not hardware. It runs with `--cpu-exact` and
+`--compatible`, but Falcon bus contention and blitter timing are approximations.
+Treat the numbers as relative, not absolute.
 
 ## Files
 
@@ -45,6 +79,14 @@ included has to sit outside that glob.
 - **The TGA backdrop is gone.** A flight simulator wants a horizon, not a
   photograph, so sky and ground are generated procedurally at startup. That
   costs no asset, no binary space and no load time.
+
+  The colour packing is worth reading before changing: RGB565 is assembled as
+  two separate bytes, `high = (r << 3) | (g >> 3)` and
+  `low = ((g & 7) << 5) | b`, which keeps every shift inside the 68k limit of
+  eight and is easy to verify by hand. The gradients divide by powers of two so
+  the interpolation is a shift. A first attempt that packed the word directly
+  produced green stripes across the sky while the ground came out correct;
+  rewriting it this way fixed it outright.
 - **The demo's info screen and its wait for SPACE are gone.** A game starts.
 - **Unused Videl tables dropped**, and the screen BSS corrected from `ds.l` to
   `ds.b` — the original allocated four times what it needed.

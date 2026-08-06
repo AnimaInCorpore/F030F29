@@ -70,93 +70,83 @@ main
 
 ; -----------------------------------------------------------------------------
 
-; Build the sky and ground backdrop procedurally.  The demo this engine came
-; from loaded a TGA here; a flight simulator wants a horizon instead, and
-; generating it costs nothing at runtime and no space in the binary.
+; Sky and ground backdrop, generated once at startup.  The demo this engine
+; came from loaded a TGA here; a flight simulator wants a horizon, which costs
+; no asset and no space in the binary.
 ;
-; Pixels are RGB565: red in bits 15..11, green 10..5, blue 4..0.  The sky runs
-; from a deep blue at the top to a pale haze at the horizon, the ground from a
-; light dusty tone at the horizon down to darker terrain.
+; RGB565: red 15..11, green 10..5, blue 4..0.  The two bytes are assembled
+; separately, which keeps every shift within the 68k limit of eight and makes
+; the packing trivial to check by hand:
+;
+;   high = (r << 3) | (g >> 3)
+;   low  = ((g & 7) << 5) | b
+;
+; All the gradients divide by powers of two so the interpolation is a shift.
 
 	lea		background,a1
+	moveq	#0,d6						; line number
 
-	move	#HORIZON_LINE-1,d7			; sky
-	moveq	#0,d6						; line counter
+.bg_line
+	cmp		#HORIZON_LINE,d6
+	bge		.bg_ground
 
-.sky_loop
-; Darker overhead, hazier towards the horizon.  Red climbs 2..26, green 16..52
-; and blue 12..30 as t runs 0..24.
-;
-; `ror.w #5` is how the five red bits reach 15..11: the shift instructions only
-; take an immediate of 1..8, so a literal `lsl #11` will not assemble.  Rotating
-; right by five puts bits 4..0 where they belong, and it is exact because the
-; rest of the word is zero.
-	move	d6,d0
-	mulu	#24,d0
-	divu	#HORIZON_LINE,d0			; quotient 0..24 in the low word
-	move	d0,d1
+	move	d6,d1						; sky, t = 0..HORIZON_LINE-1
+	lsr		#3,d1
+	add		#2,d1						; red    2..16
+	move	d1,d2
+	move	d6,d1
+	lsr		#2,d1
+	add		#8,d1						; green  8..37
+	move	d1,d3
+	move	d6,d1
+	lsr		#4,d1
+	add		#20,d1						; blue  20..27
+	move	d1,d4
+	bra		.bg_pack
 
-	move	d1,d2						; red = 2 + t
-	add		#2,d2
-	ror		#5,d2						; -> bits 15..11
+.bg_ground
+	move	d6,d5
+	sub		#HORIZON_LINE,d5			; ground, t = 0..
+	move	d5,d1
+	lsr		#3,d1
+	move	#18,d2
+	sub		d1,d2						; red   18..4
+	move	d5,d1
+	lsr		#3,d1
+	move	#24,d3
+	sub		d1,d3						; green 24..10
+	move	d5,d1
+	lsr		#4,d1
+	move	#10,d4
+	sub		d1,d4						; blue  10..3
 
-	move	d1,d3						; green = (8 + t*3/4) * 2, six bits
-	mulu	#3,d3
-	lsr		#2,d3
-	add		#8,d3
-	add		d3,d3
-	lsl		#5,d3						; -> bits 10..5
-	or		d3,d2
+.bg_pack
+	move.b	d2,d5
+	lsl.b	#3,d5						; r << 3
+	move.b	d3,d0
+	lsr.b	#3,d0						; g >> 3
+	or.b	d0,d5
+	lsl		#8,d5						; -> the high byte
+	move.b	d3,d0
+	and.b	#7,d0
+	lsl.b	#5,d0						; (g & 7) << 5
+	or.b	d4,d0						; | b
+	or.b	d0,d5						; -> the low byte
 
-	move	d1,d3						; blue = 12 + t*3/4
-	mulu	#3,d3
-	lsr		#2,d3
-	add		#12,d3
-	or		d3,d2						; -> bits 4..0
+; Two pixels per store: the line is a constant colour, so build a longword
+; once and write 160 of them instead of 320 words.
+	move	d5,d0
+	swap	d0
+	move	d5,d0
 
-	move	#SCREEN_WIDTH-1,d5
-.sky_line
-	move	d2,(a1)+
-	dbf		d5,.sky_line
+	move	#SCREEN_WIDTH/2-1,d7
+.bg_fill
+	move.l	d0,(a1)+
+	dbf		d7,.bg_fill
 
 	addq	#1,d6
-	dbf		d7,.sky_loop
-
-	move	#SCREEN_HEIGHT-HORIZON_LINE-1,d7	; ground
-	moveq	#0,d6
-
-.ground_loop
-	move	d6,d0
-	mulu	#18,d0
-	divu	#SCREEN_HEIGHT-HORIZON_LINE,d0	; quotient 0..18 down the ground
-	move	d0,d1
-
-	move	#20,d2						; red = 20 - t
-	sub		d1,d2
-	ror		#5,d2						; -> bits 15..11
-
-	move	#17,d3						; green = (17 - t*3/4) * 2, six bits
-	move	d1,d4
-	mulu	#3,d4
-	lsr		#2,d4
-	sub		d4,d3
-	add		d3,d3
-	lsl		#5,d3						; -> bits 10..5
-	or		d3,d2
-
-	move	#11,d3						; blue = 11 - t/2
-	move	d1,d4
-	lsr		#1,d4
-	sub		d4,d3
-	or		d3,d2						; -> bits 4..0
-
-	move	#SCREEN_WIDTH-1,d5
-.ground_line
-	move	d2,(a1)+
-	dbf		d5,.ground_line
-
-	addq	#1,d6
-	dbf		d7,.ground_loop
+	cmp		#SCREEN_HEIGHT,d6
+	blt		.bg_line
 
 ; -----------------------------------------------------------------------------
 
@@ -225,8 +215,6 @@ m_convert
 
 	dbra	d7,m_convert
 
-	bsr		make_test_texture
-
 	move.l	work_screen,a0
 	move.l	display_screen,a1
 
@@ -243,6 +231,7 @@ m_loop1a
 ; -----------------------------------------------------------------------------
 
 m_loop1
+	addq.l	#1,frame_count
 	clr.l	$466.w
 
 m_loop2
@@ -280,17 +269,7 @@ m_loop2
 
 	move.l	work_screen,a0
 	lea		buffer,a1
-	bsr		draw_poly_tex
-
-;
-;
-; Milestone 2 scaffolding: a rotating quad with locally computed gradients,
-; kept as a known-good reference for draw_span_tex.  Uncomment both lines to
-; draw it on top of the model; it must stay after the polygon walker, which
-; resets the repair range that clear_screen4 uses.
-;
-;	move.l	work_screen,a0
-;	bsr		draw_quad_tex
+	bsr		draw_poly_hc_l
 
 ; -----------------------------------------------------------------------------
 
@@ -336,14 +315,12 @@ m_loop2
 	move.w	#2,d1
 	bsr		print_value
 
-;
-; VBLs consumed by this frame, straight from the frame clock cleared at the top
-; of the loop.  Printing the count rather than 50/count keeps the resolution:
-; the ratio truncates, so everything from 17 to 25 VBLs read as 2.
-;
 	move.l	work_screen,a0
 	lea.l	42*8(a0),a0
-	move.l	$466.w,d0
+	move.l	$466.w,d1
+	moveq	#50,d0
+	divu	d1,d0
+	ext.l	d0
 	move	#4,d1
 	bsr		print_value
 
@@ -856,68 +833,31 @@ receive_data
 	move.l	#$ff000000,d6
 	move.l	#$007fffff,d7
 	lea		$ffffa204.w,a0
-	move.l	a1,a3						; face-count destination
-	addq	#2,a1						; filled when terminator arrives
-	clr.l	d0							; received face count
+
+rd_wait1
+	btst	#0,-2(a0)
+	beq.s	rd_wait1
+
+	move.l	(a0),d0						; # of faces
+	move	d0,(a1)+
+	tst		d0
+	beq.s	rd_end
+	subq	#1,d0
 
 rd_loop1
-	btst	#0,-2(a0)
-	beq.s	rd_loop1
-
 	move.l	(a0),d1						; count
-	tst.l	d1							; zero terminates the stream
-	beq		rd_end
-
-	addq.l	#1,d0
 	lsr		#2,d1
 	subq	#1,d1
 	move	d1,(a1)+
-
-rd_wait_colour
-	btst	#0,-2(a0)
-	beq.s	rd_wait_colour
-
 	move.l	(a0),d2						; colour
 	move	(a2,d2.w*2),(a1)+
-
-rd_wait_offset
-	btst	#0,-2(a0)
-	beq.s	rd_wait_offset
-
 	move.l	(a0),d2						; offset
 	move.l	d2,(a1)+
 
-;
-; The DSP appends the six texture words after the runs, but the rasteriser
-; wants them up front, so reserve the slots here and fill them below.
-;
-	move.l	a1,a4
-	lea		24(a1),a1
-
 rd_loop2
-
-rd_wait_left
-	btst	#0,-2(a0)
-	beq.s	rd_wait_left
-
 	move.l	(a0),d2						; left step
-
-rd_wait_right
-	btst	#0,-2(a0)
-	beq.s	rd_wait_right
-
 	move.l	(a0),d3						; right step
-
-rd_wait_flags
-	btst	#0,-2(a0)
-	beq.s	rd_wait_flags
-
 	move.l	(a0),d4						; flags
-
-rd_wait_lines
-	btst	#0,-2(a0)
-	beq.s	rd_wait_lines
-
 	move.l	(a0),d5						; lines
 
 	btst	#3,d4
@@ -951,50 +891,9 @@ rd_skip2b
 
 	dbra	d1,rd_loop2
 
-;
-; u0, dudx, dudy as 16.16 and v0, dvdx, dvdy as 8.24 - the two accumulators in
-; draw_span_tex carry different binary points so that the texel index is a byte
-; splice.  All six arrive scaled by 2^14, like the edge steps.
-;
-	moveq	#3-1,d3
-
-rd_tex_u
-	btst	#0,-2(a0)
-	beq.s	rd_tex_u
-
-	move.l	(a0),d2
-	cmp.l	d7,d2
-	ble.s	.positive
-	or.l	d6,d2
-
-.positive
-	lsl.l	#2,d2
-	move.l	d2,(a4)+
-
-	dbra	d3,rd_tex_u
-
-	moveq	#3-1,d3
-
-rd_tex_v
-	btst	#0,-2(a0)
-	beq.s	rd_tex_v
-
-	move.l	(a0),d2
-	cmp.l	d7,d2
-	ble.s	.positive
-	or.l	d6,d2
-
-.positive
-	lsl.l	#2,d2
-	lsl.l	#8,d2
-	move.l	d2,(a4)+
-
-	dbra	d3,rd_tex_v
-
-	bra		rd_loop1
+	dbra	d0,rd_loop1
 
 rd_end
-	move	d0,(a3)
 	rts
 
 ; -----------------------------------------------------------------------------
@@ -1214,6 +1113,11 @@ char_f
 	dc.w	-1, 0, 0, 0
 
 	bss
+
+; Frames completed since start.  Read against the VBL count it was sampled
+; at, this gives the frame rate directly - see docs/ENGINE.md.
+frame_count
+	ds.l	1
 
 background
 	ds		SCREEN_WIDTH*SCREEN_HEIGHT

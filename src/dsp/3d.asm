@@ -26,14 +26,6 @@ BOTTOM		= SCREEN_HEIGHT
 	jmp	main
 
 ; -----------------------------------------------------------------------------
-; Host transmit data empty interrupt (long interrupt vector)
-; -----------------------------------------------------------------------------
-
-	org	p:$22
-
-	jsr		tx_interrupt
-
-; -----------------------------------------------------------------------------
 	org	x:$0
 ; -----------------------------------------------------------------------------
 
@@ -308,9 +300,6 @@ array_polygon
 
 main
 	movep	#1,x:m_pbc			; configure host-port
-	movep	#m_hpl,x:m_ipr			; host interface interrupt priority
-	movep	#0,x:m_hcr			; host interrupts initially disabled
-	move	#0,sr				; unmask interrupts
 
 m_loop
 ;	jmp	debug				; dummy
@@ -421,6 +410,11 @@ debug						; DEBUG start!!
 	move	y:struct_object_header+2,x0
 	jsr		make_leftright
 
+;
+; Berechnete Daten senden
+;
+	jsr		send_data
+
 	rts
 
 ; -----------------------------------------------------------------------------
@@ -527,58 +521,42 @@ rd_loop7
 
 ; -----------------------------------------------------------------------------
 
-tx_interrupt
+send_data
 
-;
-; r7 is reserved as the transmit-consumer pointer while make_leftright runs.
-; Preserve the other registers used here because the interrupt may arrive at
-; any instruction boundary, including between a DIV and the following A0 use.
-;
-	move	x0,p:tx_save_x0
-	move	a2,p:tx_save_a2
-	move	a1,p:tx_save_a1
-	move	a0,p:tx_save_a0
+	move	#struct_object_header+2,r4
+	move	#leftright_table,r5
 
-	move	r7,a
-	move	p:tx_write_pointer,x0
-	cmp		x0,a
-	jeq		tx_empty
+	move	y:(r4),a			; # of faces
 
-	movep	y:(r7)+,x:m_htx
-	jmp		tx_restore
+	jclr	#1,x:m_hsr,*
+	movep	a1,x:m_htx
 
-tx_empty
-	bclr	#m_htie,x:m_hcr		; no committed data: stop interrupts
-
-	move	p:tx_final,a
 	tst		a
-	jeq		tx_restore
+	jeq		sd_end
 
-	move	#>1,a
-	move	a1,p:tx_done
+	do		a1,sd_loop1
 
-tx_restore
-	move	p:tx_save_a0,a0
-	move	p:tx_save_a1,a1
-	move	p:tx_save_a2,a2
-	move	p:tx_save_x0,x0
+	move	y:(r5)+,a			; count
+	jclr	#1,x:m_hsr,*
+	movep	a1,x:m_htx
 
-	rti
+	jclr	#1,x:m_hsr,*
+	movep	y:(r5)+,x:m_htx		; colour
 
-tx_write_pointer
-	ds	1
-tx_final
-	ds	1
-tx_done
-	ds	1
-tx_save_x0
-	ds	1
-tx_save_a0
-	ds	1
-tx_save_a1
-	ds	1
-tx_save_a2
-	ds	1
+	jclr	#1,x:m_hsr,*
+	movep	y:(r5)+,x:m_htx		; offset
+
+	do		a1,sd_loop2
+
+	jclr	#1,x:m_hsr,*
+	movep	y:(r5)+,x:m_htx		; left, right, flag ,lines
+sd_loop2
+
+	nop
+sd_loop1
+sd_end
+
+	rts
 
 ; -----------------------------------------------------------------------------
 ;
@@ -593,13 +571,6 @@ make_leftright
 ; count, colour, offset
 ; {,left, right, flag, lines}[];
 
-	bclr	#m_htie,x:m_hcr		; initialize the asynchronous sender
-	move	r4,r7				; interrupt-owned read pointer
-	move	r7,p:tx_write_pointer
-	clr		a
-	move	a1,p:tx_final
-	move	a1,p:tx_done
-
 	move	x0,a
 	tst		a
 	jeq		mlr_loop1
@@ -609,6 +580,7 @@ make_leftright
 	move	#3,n5
 	move	#4,n6
 	move	n6,n4
+	move	#offsets,r7
 
 	do		x0,mlr_loop1
 
@@ -616,7 +588,7 @@ make_leftright
 	move	r4,r5
 
 	move	x:(r0)+,x0			; # of coords | -
-	tfr		x0,a y:offsets,y0
+	tfr		x0,a y:(r7),y0
 
 	tst		a x:(r0)+,x1		; no face? | colour
 	jne		mlr_go_on
@@ -659,16 +631,12 @@ mlr_loop2
 
 	move	r2,r1
 
-	move	x:(r2)+,x0
-	move	y:offsets,y0
-	move	x:(r2)-,x1
-	move	y:offsets+1,y1
+	move	x:(r2)+,x0 y:(r7)+,y0
+	move	x:(r2)-,x1 y:(r7)-,y1
 	mpy		y0,x0,a
 	mac		y1,x1,a
 	move	a0,y:(r6)+n6			; store offset
 	move	(r6)-
-	move	x0,p:tg_xt				; topmost vertex, for tex_gradients
-	move	x1,p:tg_yt
 
 ; ----
 
@@ -828,7 +796,7 @@ mlr_not_right
 	jmp		mlr_main_loop
 
 mlr_not_convex
-	move	#>1,y0				; # of faces --
+	move	y:(r7),y0			; # of faces --
 	move	y:struct_object_header+2,a
 	sub		y0,a
 	move	a1,y:struct_object_header+2
@@ -840,270 +808,12 @@ mlr_next_face
 	move	r1,x0
 	sub		x0,a
 	move	a1,y:(r5)			; store count
-	tst		a
-	jmi		mlr_not_committed
-
-;
-; The six texture words trail the runs, so the count above stays a plain run
-; count and the record layout in front of it is unchanged.
-;
-	jsr		tex_gradients
-
-;
-; Publish only complete polygons.  Updating the pointer before enabling HTIE
-; guarantees that the interrupt never observes a partially written record.
-;
-	move	r4,p:tx_write_pointer
-	bset	#m_htie,x:m_hcr
-
-mlr_not_committed
 mlr_loop1
-
-;
-; A zero count terminates the wire stream.  The 68030 reconstructs the face
-; count while receiving, so completed faces can be sent before this routine
-; has processed the whole object.
-;
-	clr		a
-	move	a1,y:(r4)+
-	move	r4,p:tx_write_pointer
-	move	#>1,a
-	move	a1,p:tx_final
-	bset	#m_htie,x:m_hcr
-
-mlr_wait_for_transmit
-	move	p:tx_done,a
-	tst		a
-	jeq		mlr_wait_for_transmit
 
 	move	#$ffff,m1
 	move	m1,m2
 
 	rts
-
-; -----------------------------------------------------------------------------
-;
-; Texturgradienten einer Fläche im Bildschirmraum
-;
-; Milestone 3 scaffolding: the model carries no UVs yet, so the first three
-; vertices of the 2D-clipped face are assigned (0,0), (TEX_SPAN,0) and
-; (0,TEX_SPAN).  Every face therefore shows the same corner of the test
-; texture, which makes a wrong gradient obvious at a glance.  When real UVs
-; arrive, only the four numerators below change.
-;
-; u and v are affine in screen space across a planar polygon, so with dx1,dy1
-; and dx2,dy2 the two edge vectors from vertex 0,
-;
-;   det  = dx1*dy2 - dx2*dy1
-;   dudx =  SPAN*dy2/det    dudy = -SPAN*dx2/det
-;   dvdx = -SPAN*dy1/det    dvdy =  SPAN*dx1/det
-;
-; and u,v anywhere else follow by evaluating that plane - which is why 2D
-; clipping and the screen-corner vertices it inserts need no texture
-; coordinates of their own.
-;
-; The gradients and the pair evaluated at the face's topmost vertex are scaled
-; by 2^14, exactly like the edge steps above, and the 68030 shifts them into
-; place.  That caps a gradient at +/-512 texels per pixel, so a face whose det
-; is too small to represent gets zero gradients: it then samples texel (0,0)
-; and shows up as a flat marker colour instead of as garbage.
-;
-; Uses a, b, x0, x1, y0, y1 and r3.  r4 advances by the six words written.
-;
-TEX_SPAN	= 32
-TEX_DET_MIN	= 64
-
-tex_gradients
-	move	m1,a					; m1 = 2 * vertices - 1
-	move	#>5,x0
-	cmp		x0,a					; fewer than three vertices?
-	jlt		tg_degenerate
-
-	move	#ring,r3
-	nop
-	move	x:(r3)+,x1				; vx0
-	move	x:(r3)+,y1				; vy0
-
-	move	x:(r3)+,a				; vx1
-	sub		x1,a
-	move	a1,p:tg_dx1
-	move	x:(r3)+,a				; vy1
-	sub		y1,a
-	move	a1,p:tg_dy1
-
-	move	x:(r3)+,a				; vx2
-	sub		x1,a
-	move	a1,p:tg_dx2
-	move	x:(r3)+,a				; vy2
-	sub		y1,a
-	move	a1,p:tg_dy2
-
-	move	p:tg_dx1,x0
-	move	p:tg_dy2,y0
-	mpy		x0,y0,a
-	move	p:tg_dx2,x0
-	move	p:tg_dy1,y0
-	mac		-x0,y0,a				; a = 2 * det
-	asr		a
-	move	a0,x1
-	move	x1,a					; a = det
-
-	abs		a
-	move	#>TEX_DET_MIN,x0
-	cmp		x0,a					; too thin to represent?
-	jlt		tg_degenerate
-
-	move	a1,p:tg_absdet
-
-	clr		b
-	jclr	#23,x1,tg_det_positive
-
-	move	#>1,b
-
-tg_det_positive
-	move	b1,p:tg_negate
-
-	move	#>TEX_SPAN,x0
-	move	p:tg_dy2,y0
-	mpy		x0,y0,a
-	asr		a
-	move	a0,y1
-	jsr		tg_divide
-	move	a0,p:tg_dudx
-
-	move	#>TEX_SPAN,x0
-	move	p:tg_dx2,y0
-	mpy		-x0,y0,a
-	asr		a
-	move	a0,y1
-	jsr		tg_divide
-	move	a0,p:tg_dudy
-
-	move	#>TEX_SPAN,x0
-	move	p:tg_dy1,y0
-	mpy		-x0,y0,a
-	asr		a
-	move	a0,y1
-	jsr		tg_divide
-	move	a0,p:tg_dvdx
-
-	move	#>TEX_SPAN,x0
-	move	p:tg_dx1,y0
-	mpy		x0,y0,a
-	asr		a
-	move	a0,y1
-	jsr		tg_divide
-	move	a0,p:tg_dvdy
-
-;
-; u and v at the topmost vertex: the pixel the offset word points at, and
-; where the 68030 starts walking this face.
-;
-	move	p:tg_xt,a
-	move	p:tg_yt,b
-	move	#ring,r3
-	nop
-	move	x:(r3)+,x0
-	sub		x0,a
-	move	a1,y0					; xt - vx0
-	move	x:(r3),x0
-	sub		x0,b
-	move	b1,y1					; yt - vy0
-
-	move	p:tg_dudx,x0
-	mpy		x0,y0,a
-	move	p:tg_dudy,x0
-	mac		x0,y1,a
-	asr		a
-	move	a0,p:tg_u0
-
-	move	p:tg_dvdx,x0
-	mpy		x0,y0,a
-	move	p:tg_dvdy,x0
-	mac		x0,y1,a
-	asr		a
-	move	a0,p:tg_v0
-
-	move	p:tg_u0,x0
-	move	x0,y:(r4)+
-	move	p:tg_dudx,x0
-	move	x0,y:(r4)+
-	move	p:tg_dudy,x0
-	move	x0,y:(r4)+
-	move	p:tg_v0,x0
-	move	x0,y:(r4)+
-	move	p:tg_dvdx,x0
-	move	x0,y:(r4)+
-	move	p:tg_dvdy,x0
-	move	x0,y:(r4)+
-
-	rts
-
-tg_degenerate
-	clr		a
-	move	a1,y:(r4)+				; u0
-	move	a1,y:(r4)+				; dudx
-	move	a1,y:(r4)+				; dudy
-	move	a1,y:(r4)+				; v0
-	move	a1,y:(r4)+				; dvdx
-	move	a1,y:(r4)+				; dvdy
-
-	rts
-
-;
-; a0 = (y1 / tg_absdet) * 2^14, sign corrected
-;
-tg_divide
-	move	#$4000,x0
-	mpy		x0,y1,a					; numerator * 2^15
-	move	p:tg_negate,b
-	tst		a
-	jpl		tg_divide_positive
-
-	neg		a
-	move	#>1,y0
-	eor		y0,b
-
-tg_divide_positive
-	move	p:tg_absdet,x0
-	andi	#$fe,ccr
-	rep		#24
-	div		x0,a
-	jclr	#0,b1,tg_divide_done
-
-	neg		a
-
-tg_divide_done
-	rts
-
-tg_dx1
-	ds	1
-tg_dy1
-	ds	1
-tg_dx2
-	ds	1
-tg_dy2
-	ds	1
-tg_absdet
-	ds	1
-tg_negate
-	ds	1
-tg_dudx
-	ds	1
-tg_dudy
-	ds	1
-tg_dvdx
-	ds	1
-tg_dvdy
-	ds	1
-tg_u0
-	ds	1
-tg_v0
-	ds	1
-tg_xt
-	ds	1
-tg_yt
-	ds	1
 
 ; -----------------------------------------------------------------------------
 ;
