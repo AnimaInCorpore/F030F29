@@ -181,8 +181,12 @@ and the sub-`0x41` path splits again on the unsigned comparison:
 01E2  jmp  bp
 01E4  mov  [di+0x20], al        ; 0x80..0xFF - note
 01E7  mov  [di+0x12], si
-01FC  call word ptr [0xBCD]     ;   and trigger note-on
+01FC  call word ptr [0xBCD]     ;   release the previous note
 ```
+
+Slot 8 releases; **slot 7** is what sounds the new note. Both back ends
+implement slot 8 as note-off — MIDI `0x80 | ch` on the MPU side, clearing the
+OPL2 key-on bit on the AdLib side.
 
 So a token is one of three things:
 
@@ -338,7 +342,7 @@ instrument table, which is why the handler behind slot 1 opens with
 | 5 | `0xBC7` | `0x03BC`, `0x03F5` |
 | 6 | `0xBC9` | `0x0132` |
 | 7 | `0xBCB` | `0x0249` |
-| 8 | `0xBCD` | **note-on**, from `0x0198` and `0x01FC` |
+| 8 | `0xBCD` | **note off**, from `0x0198` and `0x01FC` — see [MPU401-BACKEND.md](MPU401-BACKEND.md); slot 7 is what sounds the note |
 | 9 | `0xBCF` | `0x0351` |
 | 10 | `0xBD1` | `0x03C0` |
 
