@@ -155,10 +155,102 @@ likely.
 The music occupies `0x1267`-`0x1E9E`, about 3.1 KB — roughly 40 % of the
 overlay.
 
-Pattern bytes cluster in the `0x40`-`0x59` range with recurring pairs such as
-`4f 01`, `4f 02`, `ff 59`, `ab 43`, so it is a command stream rather than raw
-note values. Decoding it is not needed to locate or extract the data and has
-not been attempted.
+### The pattern command stream
+
+```bash
+python tools/re/patterns.py                 # decode and validate all 74
+python tools/re/patterns.py --pattern 141d  # one pattern
+```
+
+The interpreter is at `0x01D0`:
+
+```
+01D0  lodsb                     ; token
+01D1  cmp  al, 0x41
+01D3  jl   0x1DD                ; SIGNED - so 0x80..0xFF go here too
+01D5  shl  al, 1
+01D7  mov  bl, al
+01D9  jmp  word ptr [bx+0x8F8]  ; command dispatch
+```
+
+and the sub-`0x41` path splits again on the unsigned comparison:
+
+```
+01DD  jae  0x1E4
+01DF  mov  [di+0x1C], al        ; 0x00..0x40 - duration
+01E2  jmp  bp
+01E4  mov  [di+0x20], al        ; 0x80..0xFF - note
+01E7  mov  [di+0x12], si
+01FC  call word ptr [0xBCD]     ;   and trigger note-on
+```
+
+So a token is one of three things:
+
+| Range | Meaning |
+|---|---|
+| `0x00`-`0x40` | duration |
+| `0x41`-`0x5B` | command — the mnemonic is the ASCII letter |
+| `0x80`-`0xFF` | note, triggers note-on |
+
+The command table ends at `0x5B` because entry `0x5C` would land on `0x9B0`,
+where the channel structures begin.
+
+| Cmd | | Operand | Handler does |
+|---|---|---:|---|
+| `0x41` | `A` | 0 | restore duration from `[di+0x1C]` |
+| `0x42` | `B` | 0 | reload si from `[di+0x14]` — advance the sequence |
+| `0x43` | `C` | 0 | test `[di]`, end when zero |
+| `0x44` | `D` | 1 | set `[di+0x21]` |
+| `0x45` | `E` | 1 | set global `[0x236]` |
+| `0x46` | `F` | 1 | set global `[0x156]` |
+| `0x47` | `G` | 0 | loop start, count 2 |
+| `0x48` | `H` | 1 | loop start, count from operand |
+| `0x49` | `I` | 0 | loop end, decrement `[di+0x25]` |
+| `0x4A` | `J` | 1 | set `[di+0x1D]` |
+| `0x4B` | `K` | 0 | clear `[di+0x1D]` |
+| `0x4C` | `L` | 1 | device call through `[0xBBF]` |
+| `0x4D` | `M` | 1 | set global `[0x1A8]` |
+| `0x4E` | `N` | 1 | set `[di+0x0C]`, `[di+0x0D]` |
+| `0x4F` | `O` | 2 | same, from a word |
+| `0x50` | `P` | 2 | set `[di+0x10]` |
+| `0x51` | `Q` | 1 | set global `[0x755]` |
+| `0x52` | `R` | 2 | set `[di+0x0C]`, `[di+0x0D]` |
+| `0x53` | `S` | 0 | set flag `0x20` in `[di+4]` |
+| `0x54` | `T` | 0 | set flag `0x10` in `[di+4]` |
+| `0x55` | `U` | 1 | set `[di+0x1A]` |
+| `0x56` | `V` | 1 | set `[di+0x0F]` |
+| `0x57` | `W` | 0 | no operation |
+| `0x58` | `X` | 0 | `jmp si` |
+| `0x59` | `Y` | 2 | conditional on bit 0 |
+| `0x5A` | `Z` | 1 | relative branch, signed |
+| `0x5B` | `[` | 1 | set global `[0x5CA]` |
+
+### Patterns are not self-terminating
+
+There is no terminator byte. A pattern's extent comes from the sequence table:
+sorting every referenced pattern address gives the boundaries, and each pattern
+runs up to the next one. The most common last token is `B` (43 of 74), which
+reloads si and so means "finished, advance the sequence"; the rest end on `C`,
+`Z`, a note, or simply run to the boundary.
+
+**This is what validates the operand sizes.** All 74 patterns tokenise to land
+*exactly* on their boundary — a single wrong operand size anywhere would
+desynchronise the stream and overshoot. Totals across the region: 1,020 notes,
+726 durations, 659 commands in 2,690 bytes.
+
+Nine commands never occur in the data: `F K S T U V W X [`.
+
+A pattern reads cleanly:
+
+```
+pattern 0x141d..0x1428  6 tokens
+  51 00     Q 0x00     set global [0x755]
+  4f ff01   O 0xff01   set [di+0x0C], [di+0x0D] from word
+  59 0b10   Y 0x0b10   conditional on bit 0
+  0a        duration 10
+  ab        note 0xab
+  43        C          test [di]; end when zero
+```
 
 ## Sound effects
 
@@ -191,6 +283,15 @@ The Falcon side does not need any of this code. It needs the **interface**:
 arguments. The replacement is a DSP56001 driver with the same entry points, and
 the call sites in the translated game code keep their shape.
 
-The music data does need converting: six tracks, 49 voices, 74 patterns, all
-extractable from the decompressed overlay with the layout above. The pattern
-command stream has to be decoded before it can be re-sequenced on the DSP.
+The music data does need converting, and it now can be: six tracks, 49 voices,
+74 patterns, a 27-command instruction set, all decoded and validated. The DSP
+sequencer needs to implement the eighteen commands that actually occur —
+`A B C D E G H I J L M N O P Q R Y Z` — plus notes and durations. `A`, `O`, `I`
+and `B` together account for more than three quarters of all commands.
+
+What the commands *mean* musically is still only partly known. They are
+identified by which channel field they write, not by their effect: `[di+0x0C]`
+and `[di+0x0D]` (written by `N`, `O` and `R`, 84 times) is most likely the
+pitch or frequency divisor, and `[di+0x21]`, `[di+0x1A]`, `[di+0x1D]` are
+envelope or instrument parameters. Pinning those down means following the
+device vectors `[0xBBF]`, `[0xBCD]` into the AdLib and MPU-401 back ends.
