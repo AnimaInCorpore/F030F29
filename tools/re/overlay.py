@@ -24,6 +24,8 @@ except ImportError:
     sys.exit("capstone is required: python -m pip install capstone")
 
 DISPATCH_TABLE = 0xC5E
+TRACK_TABLE = 0x134D                     # from `mov bx, 0x134D` in function AH=1
+TRACK_TERMINATOR = 0xFF
 LCALL_PATTERN = b"\xff\x1e\x14\xfc"      # lcall far [0xFC14]
 MOV_AX_IMM = 0xB8
 
@@ -58,6 +60,39 @@ def function_table(overlay: bytes, md) -> list[tuple[int, int, str]]:
         out.append((ah, entry, " / ".join(f"{i.mnemonic} {i.op_str}".strip()
                                           for i in head)))
     return out
+
+
+def music_tracks(overlay: bytes, limit: int = 16) -> list[tuple[int, list]]:
+    """Parse the track table into [(header, [(count, pointer), ...]), ...].
+
+    Function AH=1 walks it: a header byte, then four-byte voice entries, then a
+    0xFF.  Skipping to track N is `inc bx / add bx,4` until the terminator,
+    repeated N times, which fixes the layout exactly.
+
+    Each voice entry is (count, pointer) and the pointer leads to `count` words,
+    every one of them the address of a pattern - so the structure is the usual
+    tracker arrangement of song, voices, sequence, patterns.
+    """
+    def sane(count: int, pointer: int) -> bool:
+        return 0 < count <= 64 and 0 < pointer and pointer + 2 * count <= len(overlay)
+
+    tracks, pos = [], TRACK_TABLE
+    while pos < len(overlay) and len(tracks) < limit:
+        header, pos = overlay[pos], pos + 1
+        voices = []
+        while pos + 4 <= len(overlay) and overlay[pos] != TRACK_TERMINATOR:
+            count, pointer = struct.unpack_from("<HH", overlay, pos)
+            if not sane(count, pointer):
+                voices = []               # ran past the table into pattern data
+                break
+            voices.append((count, pointer))
+            pos += 4
+        if not voices:
+            break
+        if pos < len(overlay) and overlay[pos] == TRACK_TERMINATOR:
+            pos += 1
+        tracks.append((header, voices))
+    return tracks
 
 
 def call_sites(image: bytes, md) -> list[tuple[int, int | None, int | None]]:
@@ -113,6 +148,28 @@ def main() -> None:
         shown = " ".join(f"{p:#04x}" for p in params[:8])
         print(f"  AH={ah:2d}  {count:2d} calls   AL: {shown}")
     print(f"  AX not static at {len(sites) - len(known)} sites")
+    print()
+
+    tracks = music_tracks(overlay)
+    patterns = set()
+    for _, voices in tracks:
+        for count, pointer in voices:
+            for k in range(count):
+                patterns.add(struct.unpack_from("<H", overlay, pointer + 2 * k)[0])
+    voices_total = sum(len(v) for _, v in tracks)
+    seq_lo = min(p for _, v in tracks for _, p in v)
+    seq_hi = max(p + 2 * c for _, v in tracks for c, p in v)
+
+    print(f"music: {len(tracks)} tracks, {voices_total} voices, "
+          f"{len(patterns)} distinct patterns")
+    table_end = TRACK_TABLE + sum(2 + 4 * len(v) for _, v in tracks)
+    print(f"  track table   {TRACK_TABLE:#06x}..{table_end - 1:#06x}")
+    print(f"  sequences     {seq_lo:#06x}..{seq_hi - 1:#06x}")
+    print(f"  patterns      {min(patterns):#06x}..{len(overlay) - 1:#06x}  "
+          f"({len(overlay) - min(patterns)} bytes)")
+    for i, (header, voices) in enumerate(tracks):
+        print(f"  track {i}: header {header:#04x}, {len(voices)} voices, "
+              f"{sum(c for c, _ in voices)} sequence steps")
 
 
 if __name__ == "__main__":

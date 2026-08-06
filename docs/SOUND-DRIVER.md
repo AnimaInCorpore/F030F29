@@ -104,15 +104,93 @@ The startup sequence at `0x009C` onwards reads cleanly with this: `AH=6 AL=0xFF`
 to initialise, then `AH=1 AL=0x00` to start the title music, then a run of
 `AH=5` effect calls during the intro.
 
+## The music data
+
+It is inside the overlay, not somewhere else as first assumed. Function AH=1
+starts at `mov bx, 0x134D`, and the way it skips to track *N* pins the layout
+down exactly:
+
+```
+0049  mov  bx, 0x134D
+004C  mov  dh, 0xFF
+004E  jmp  0x59
+0050  inc  bx           ; step over the header byte
+0051  add  bx, 4        ; step over one voice entry
+0054  cmp  [bx], dh     ; terminator?
+0056  jne  0x51
+0058  inc  bx           ; step over the terminator
+0059  dec  al           ; one track skipped
+005B  jns  0x50
+```
+
+So a track is a header byte, then four-byte voice entries, then `0xFF`. Each
+voice entry is `(count, pointer)`, and the pointer leads to `count` words, each
+of which is the address of a pattern. That is the usual tracker arrangement:
+song, voices, sequence, patterns.
+
+| Track | Header | Voices | Sequence steps |
+|---:|---|---:|---:|
+| 0 | `0x2A` | 5 | 5 |
+| 1 | `0x2A` | 8 | 32 |
+| 2 | `0x2A` | 9 | 34 |
+| 3 | `0x2A` | 9 | 26 |
+| 4 | `0x48` | 9 | 9 |
+| 5 | `0x2A` | 9 | 9 |
+
+Six tracks, matching the `AL` values `0x00` to `0x05` seen at the call sites
+exactly. Track 4 carries a different header byte — a different tempo, most
+likely.
+
+### Layout of the overlay
+
+| Range | Contents |
+|---|---|
+| `0x0000`-`0x0C5D` | code |
+| `0x0C5E`-`0x0C8A` | dispatch table, 23 functions |
+| `0x0C8B`-`0x1266` | code and driver state |
+| `0x1267`-`0x134C` | sequence lists, 49 voices |
+| `0x134D`-`0x141C` | track table, 6 tracks |
+| `0x141D`-`0x1E9E` | pattern data, 74 distinct patterns, 2,690 bytes |
+
+The music occupies `0x1267`-`0x1E9E`, about 3.1 KB — roughly 40 % of the
+overlay.
+
+Pattern bytes cluster in the `0x40`-`0x59` range with recurring pairs such as
+`4f 01`, `4f 02`, `ff 59`, `ab 43`, so it is a command stream rather than raw
+note values. Decoding it is not needed to locate or extract the data and has
+not been attempted.
+
+## Sound effects
+
+Function AH=5 does not index a table at all:
+
+```
+002D  mov  [0x207], al          ; remember the parameter
+0030  mov  cl, al
+0032  mov  di, 0x9B0            ; first channel structure
+0035  cli
+0036  test byte [di+4], 0x88    ; channel in use?
+003A  jne  0x40
+003C  call word ptr [0xBC5]     ; free - start it here
+0040  add  di, 0x3A             ; next channel, stride 58 bytes
+0043  cmp  byte [di], 0
+0046  jne  0x36
+0048  ret
+```
+
+It walks the channel structures at `0x9B0`, stride 58 bytes, and starts the
+effect on the first free one through the device vector at `[0xBC5]`. The `AL`
+values used by the game are `0xA0`, `0xB4`, `0xC8`, `0xDC` and `0xF0` — evenly
+spaced by 20, which suggests a pitch or period rather than an index into a
+sample bank. There are no samples in the overlay to index anyway.
+
 ## For the port
 
 The Falcon side does not need any of this code. It needs the **interface**:
-23 functions with `AH`/`AL` semantics, of which only seven are actually used
-with static arguments. The Falcon replacement is a driver on the DSP56001 with
-the same entry points, and the call sites in the translated game code keep their
-shape.
+23 functions with `AH`/`AL` semantics, of which seven are used with static
+arguments. The replacement is a DSP56001 driver with the same entry points, and
+the call sites in the translated game code keep their shape.
 
-The music and effect data is not in the overlay. Function 1 indexes a table at
-`0x134D` inside it, but the tracks themselves are elsewhere — most likely among
-the resources not yet identified. Finding them is what the audio work needs
-next.
+The music data does need converting: six tracks, 49 voices, 74 patterns, all
+extractable from the decompressed overlay with the layout above. The pattern
+command stream has to be decoded before it can be re-sequenced on the DSP.
