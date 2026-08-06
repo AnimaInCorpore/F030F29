@@ -1,236 +1,206 @@
-# Reverse-Engineering-Notizen: X.EXE
+# Reverse-engineering notes: X.EXE
 
-Werkzeuge in `tools/re/`:
+Tools in `tools/re/`:
 
 ```bash
-python tools/re/mzinfo.py     # MZ-Header, Relocations, Segmentlayout
-python tools/re/disasm.py     # rekursiver Disassembler -> re/listings/x.lst
-python tools/re/codemap.py    # Code/Daten-Segmentierung per Fensteranalyse
+python tools/re/mzinfo.py     # MZ header, relocations, segment layout
+python tools/re/disasm.py     # recursive-descent disassembler -> re/listings/x.lst
+python tools/re/codemap.py    # code/data segmentation by windowed analysis
+python tools/re/peek.py D2C0 -n 30
+python tools/re/xref.py E4C5  # who calls this?
 ```
 
-## Umfang
+## Size
 
-| Datei | Größe | Code | Daten |
+| File | Size | Code | Data |
 |---|---:|---:|---:|
-| `X.EXE` (Load Module) | 68.128 B | **~50.976 B (74,8 %)** | ~17.152 B |
-| `RETAL.00` | 239.200 B | — | 239.200 B |
-| `RETAL.01` | 359.172 B | — | 359.172 B |
+| `X.EXE` (load module) | 68,128 B | **~50,976 B (74.8 %)** | ~17,152 B |
+| `RETAL.00` | 239,200 B | — | 239,200 B |
+| `RETAL.01` | 359,172 B | — | 359,172 B |
 
-**Der gesamte Programmcode steckt in `X.EXE`** — rund **51 KB** x86-Realmode.
-Bei gemessenen 2,14 Byte/Instruktion sind das grob **23.000–24.000
-Instruktionen**.
+**All the program code is in `X.EXE`** — roughly **51 KB** of x86 real mode. At
+the measured 2.14 bytes per instruction that is about **23,000 to 24,000
+instructions**.
 
-`RETAL.00`/`.01` enthalten *keinen* Code. Die Fensteranalyse meldet zwar 11 %
-bzw. 15 % „Code", aber kein einziger zusammenhängender Lauf ≥ 1 KB ist so
-klassifiziert — verstreute 256-Byte-Fenster sind das Rauschmuster, nicht echter
-Code. Die Opcode-Statistik bestätigt es:
+`RETAL.00` and `.01` hold no code as stored. The windowed analysis reports 11 %
+and 15 % "code", but not one contiguous run of 1 KB or more is classified that
+way — scattered 256-byte windows are the noise pattern, not real code. The
+opcode statistics agree:
 
 | | `call` | `ret` | `mov r,rm` |
 |---|---:|---:|---:|
-| `X.EXE` | 1,91 % | 0,97 % | 1,98 % |
-| `RETAL.00` | 0,29 % | 0,15 % | 0,14 % |
-| `RETAL.01` | 0,23 % | 0,06 % | 0,09 % |
+| `X.EXE` | 1.91 % | 0.97 % | 1.98 % |
+| `RETAL.00` | 0.29 % | 0.15 % | 0.14 % |
+| `RETAL.01` | 0.23 % | 0.06 % | 0.09 % |
 
-**Einschränkung dazu** (Befund aus der Dispatcher-Analyse, s. u.): die Aussage
-gilt für die Dateien *wie gespeichert*. `RETAL.00`/`.01` sind ein
-Ressourcenarchiv, und mindestens eine Ressource wird ausgeführt — der Loader
-lädt Ressource 15 in einen 7.840-Byte-Puffer und ruft deren Offset 0 per
-`lcall` auf. Die Dateien sind also ganz überwiegend Daten, enthalten aber
-Overlay-Code. Die frühere Formulierung „reine Spieldaten" war zu absolut.
+The one exception is `RETAL.00` resource 15, a 7,081-byte overlay that the
+loader far-calls at offset 0. See [ARCHIVE-FORMAT.md](ARCHIVE-FORMAT.md).
 
-## Speicherlayout
+## Memory layout
 
-Entry `0000:0000`. Die ersten 32 Byte bauen eine Segmenttabelle auf: ab `0xFC16`
-stehen 9 Wörter mit *Größen* in Paragraphen, die Schleife bei `0x0012` rechnet
-sie in-place in *Segmentbasen* um (`bx = [di]` lesen, `ax` schreiben,
-`ax += bx`).
+Entry at `0000:0000`. The first 32 bytes build a segment table: nine words of
+*sizes* in paragraphs sit at `0xFC16`, and the loop at `0x0012` converts them
+in place into *segment bases* (read `bx = [di]`, store `ax`, `ax += bx`).
 
 ```
 0000:0000  cli / cld
-0000:0002  mov  dx, [2]          ; PSP: oberstes Speichersegment
-0000:000C  mov  di, 0xFC16       ; Segmenttabelle, 9 Einträge
+0000:0002  mov  dx, [2]          ; PSP: top of memory segment
+0000:000C  mov  di, 0xFC16       ; segment table, nine entries
 0000:000F  mov  cx, 9
 0000:0012  mov  bx, [di] / stosw / add ax, bx / loop
-0000:0019  mov  ss, [0xFC1C]     ; Stack aus Slot 3
-0000:001D  mov  sp, 0xC00        ; 3 KB Stack
+0000:0019  mov  ss, [0xFC1C]     ; stack from slot 3
+0000:001D  mov  sp, 0xC00        ; 3 KB stack
 ```
 
-Ergebnis, relativ zur Ladeadresse:
+Result, relative to the load address:
 
-| Slot | Basis | Größe | Zweck |
+| Slot | Base | Size | Purpose |
 |---|---|---:|---|
-| `FC16` | +0x0000 | — | Codesegment (= CS) |
-| `FC18` | +0x0000 | 64 KB | Code/Daten |
-| `FC1A` | +0x1000 | 64 KB | Rest-Segment (Ziel der 4 Relocations) |
-| `FC1C` | +0x2000 | 64 KB | **Stack** (SP = 0xC00) |
-| `FC1E` | +0x3000 | 63.360 B | Puffer |
-| `FC20` | +0x3F78 | 12.000 B | Puffer |
-| `FC22` | +0x4266 | 37.440 B | Puffer (`mov es,[0xFC22]` bei `0x0067`) |
-| `FC24` | +0x4B8A | 36.096 B | Puffer |
-| `FC26` | +0x5452 | 7.840 B | Puffer |
-| Ende | +0x563C | | Gesamt **352.448 B** |
+| `FC16` | +0x0000 | — | code segment (= CS) |
+| `FC18` | +0x0000 | 64 KB | code and data |
+| `FC1A` | +0x1000 | 64 KB | tail segment (target of the four relocations) |
+| `FC1C` | +0x2000 | 64 KB | **stack** (SP = 0xC00) |
+| `FC1E` | +0x3000 | 63,360 B | buffer |
+| `FC20` | +0x3F78 | 12,000 B | buffer |
+| `FC22` | +0x4266 | 37,440 B | buffer (`mov es,[0xFC22]` at `0x0067`) |
+| `FC24` | +0x4B8A | 36,096 B | buffer |
+| `FC26` | +0x5452 | 7,840 B | buffer (holds the overlay) |
+| end | +0x563C | | total **352,448 B** |
 
-Die Puffer ab Slot 4 sind das Ziel für `RETAL.00`/`.01` — zusammen 156.736 Byte
-Pufferfläche gegenüber 598.372 Byte Dateigröße, die Daten werden also
-gestreamt oder entpackt, nicht komplett gehalten.
+## Overlay dispatcher `lcall [0xFC14]`
 
-## Overlay-Dispatcher `lcall [0xFC14]`
+35 call sites. The far pointer is patched at run time; the target is
+`RETAL.00` resource 15, loaded into slot 8. `AX` is a command of the form
+`AH` = function, `AL` = parameter. Details in
+[ARCHIVE-FORMAT.md](ARCHIVE-FORMAT.md).
 
-35 Aufrufstellen. Der Far-Pointer wird zur Laufzeit gepatcht:
+Because this dispatcher leads out of `X.EXE`, it cannot be resolved from here.
 
-```
-0000:0082  mov  dx, [0xFC26]         ; Zielsegment = Tabellenslot 8 (7.840 B)
-0000:0086  mov  ax, 0x000F           ; Ressourcennummer 15
-0000:0089  call 0xD20B               ; Loader
-0000:008C  mov  ax, [0xFC26]
-0000:0090  mov  word [0xFC14], 0     ; Offset := 0
-0000:0096  mov  [0xFC16], ax         ; Segment := geladenes Segment
-0000:0099  mov  ax, 0x06FF           ; Funktionscode
-0000:009C  lcall far [0xFC14]        ; -> geladenes_segment:0000
-```
+## Resolved indirect jumps
 
-`AX` ist ein Kommando in der Form AH = Funktion, AL = Parameter. Beobachtet:
-`0x06FF`, `0x0100`, `0x05A0`, `0x0101`.
+Every target is documented in [`re/seeds.txt`](../re/seeds.txt) and read by
+`disasm.py` automatically. Coverage went from **8.2 % to 40.6 %**, 2,601 to
+11,297 instructions, 102 to 340 call targets.
 
-Der Loader bei `0xD20B` baut den Dateinamen dynamisch:
-
-```
-D22E  mov bl, [0xD2F2]     ; High-Byte der Ressourcennummer
-D232  shr bl, 1
-D239  mov al, bl
-D23B  aam 0x0A             ; in zwei Dezimalziffern zerlegen
-D23D  add ax, 0x3030       ; -> ASCII
-D240  xchg al, ah
-D242  mov [0xD3A2], ax     ; in "RETAL.00" einsetzen
-D248  mov dx, 0xD395       ; -> "\RETAL", "RETAL.NN"
-D24B  mov ax, 0x3D00       ; DOS open
-```
-
-`0xD3A2` ist exakt die Position der beiden Ziffern in `RETAL.00`. Damit ist
-belegt: **`RETAL.NN` ist ein per Zweiziffern-Index adressiertes Ressourcenarchiv**,
-und das High-Byte von `AX` wählt die Datei, das Low-Byte die Ressource darin.
-
-Da dieser Dispatcher aus `X.EXE` herausführt, ist er von hier aus nicht weiter
-auflösbar — er braucht zuerst das Archivformat (Task 3).
-
-## Aufgelöste indirekte Sprünge
-
-Alle Ziele liegen dokumentiert in [`re/seeds.txt`](../re/seeds.txt) und werden
-von `disasm.py` automatisch eingelesen. Ergebnis: Abdeckung **8,2 % → 40,6 %**,
-2.601 → 11.297 Instruktionen, 102 → 340 Call-Targets.
-
-| Stelle | Art | Auflösung |
+| Site | Kind | Resolution |
 |---|---|---|
-| `0xD2DA` | `call cs:[bx-0x2BC6]` | Tabelle `0xD43A`, **7 Einträge**. Alle Handler prüfen `cs:[0xD5C8]` gegen 4, `cx` = 0x2000/0x2880/0x0800/0x3C00 → **Pixelformat-Dispatcher** für CGA/Tandy/EGA/VGA, kein Entpacker |
-| `0xD2EE` | `jmp ax` | `mov ax,0xD329` direkt davor — per Konstantenpropagation |
-| `0x29D5` | `call [si]` | Tabelle `0x29EF`, bitweise durch `AL` gelaufen → max. 8 Einträge, **Subsystem-Init-Maske**. Bit 7 = `int 15h AX=C200`, PS/2-Maus |
-| `0x5B8C` | `jmp ax` | Trampolintabelle **rückwärts** ab `0x5BE6`: Code 9 → `0x5BE6`, Code 0 → `0x5BD4` |
-| `0x5B92` | `jmp bp` | Drei Glyphen-Renderer: `0x58FB`, `0x5852`, `0x599A` |
-| `0xE4CC` | `jmp [bx]` | **Menü-Dispatcher**, Tabelle liegt inline hinter jeder Aufrufstelle. Drei Stellen gefunden: `0xC564` (7), `0xD754` (8), `0xE680` (7) |
-| `0x8F26` | `call [bx-0x70C4]` | Basis `0x8F3C`, **4 Einträge** |
-| `0xF263` | `call [bx-0x5929]` | Basis `0xA6D7`, **13 Einträge**, Index aus `[0xA720]` |
+| `0xD2DA` | `call cs:[bx-0x2BC6]` | table at `0xD43A`, **7 entries**. Every handler tests `cs:[0xD5C8]` against 4 and works with `cx` = 0x2000/0x2880/0x0800/0x3C00 → **pixel format dispatcher** for CGA/Tandy/EGA/VGA, not a decompressor |
+| `0xD2EE` | `jmp ax` | `mov ax,0xD329` immediately before — constant propagation |
+| `0x29D5` | `call [si]` | table at `0x29EF`, walked bit by bit through `AL`, so at most 8 entries — **subsystem init mask**. Bit 7 is `int 15h AX=C200`, the PS/2 mouse |
+| `0x5B8C` | `jmp ax` | trampoline table running **backwards** from `0x5BE6`: code 9 lands on `0x5BE6`, code 0 on `0x5BD4` |
+| `0x5B92` | `jmp bp` | three glyph renderers: `0x58FB`, `0x5852`, `0x599A` |
+| `0xE4CC` | `jmp [bx]` | **menu dispatcher**, table inline after each call site. Three sites: `0xC564` (7), `0xD754` (8), `0xE680` (7) |
+| `0x8F26` | `call [bx-0x70C4]` | base `0x8F3C`, **4 entries** |
+| `0xF263` | `call [bx-0x5929]` | base `0xA6D7`, **13 entries**, index from `[0xA720]` |
 
-### Menü-Dispatcher im Detail
+### The menu dispatcher
 
-Das Muster wiederholt sich im ganzen Programm:
+The pattern repeats throughout the program:
 
 ```
-D74A  mov  cl, 8           ; Zahl der Menüpunkte
-D74C  call 0xE49F          ; Taste lesen und prüfen
-D74F  jae  0xD74A          ; ungültig -> nochmal
-D751  call 0xE4C5          ; dispatchen
+D74A  mov  cl, 8           ; number of menu entries
+D74C  call 0xE49F          ; read and validate a key
+D74F  jae  0xD74A          ; invalid -> again
+D751  call 0xE4C5          ; dispatch
 D754  dw   D872, E199, DC02, E106, DCB5, D766, E6F3, 74CA   ; inline
 ```
 
-`0xE49F` liest eine Taste, rechnet `'1'..'9','0'` in Index 0..9 um (`sub al,0x30`,
-`'0'` wird zu 10, dann `dec ax`) und prüft mit `cmp al,cl`. `0xE4C5` macht
-`pop bx / add bx,ax / jmp [bx]` — die Rücksprungadresse *ist* die Tabellenbasis.
+`0xE49F` reads a key, maps `'1'..'9','0'` to index 0..9 (`sub al,0x30`, `'0'`
+becomes 10, then `dec ax`) and checks it against `cl`. `0xE4C5` does
+`pop bx / add bx,ax / jmp [bx]` — the return address *is* the table base.
 
-Tabellenlängen sind statisch belegbar: bei `0xC564` durch `jb 0xC572` an
-`0xC55F` (macht `0xC572` zu Code), bei `0xE680` dadurch, dass ab `0xE68E` die
-Inline-String-Routine beginnt, bei `0xD754` durch `mov cl,8`.
+Table lengths are statically provable: at `0xC564` by the `jb 0xC572` at
+`0xC55F`, which makes `0xC572` code; at `0xE680` by the inline-string routine
+starting at `0xE68E`; at `0xD754` by the `mov cl,8`.
 
-## Inline-String-Idiom
+## The inline-string idiom
 
-Der Hauptgrund für die anfangs niedrige Abdeckung war nicht die Sprungtabellen,
-sondern dieses Muster: `call` auf eine Textroutine, direkt gefolgt vom String.
-Die Routine holt mit `pop si` die Rücksprungadresse als Stringzeiger und kehrt
-mit `jmp si` hinter das Stringende zurück. **Ende = Byte mit gesetztem Bit 7.**
+The main reason coverage started so low was not the jump tables but this: a
+`call` to a text routine followed immediately by the string. The routine pops
+the return address as a string pointer and returns past the terminator, which is
+**a byte with bit 7 set**.
 
 ```
-5B59  pop  si              ; si = Rücksprungadresse = Stringzeiger
+5B59  pop  si              ; si = return address = string pointer
 5B5A  call 0x5BCA
-5B5D  call 0x5B6E          ; String abarbeiten
-5B60  jmp  si              ; hinter dem String weiter
+5B5D  call 0x5B6E          ; walk the string
+5B60  jmp  si              ; resume after it
 ```
 
-Wer das nicht kennt, disassembliert ab dem `call` in die Stringbytes hinein und
-entgleist. `disasm.py` erkennt solche Routinen selbst: es scannt das gesamte
-Image nach `call rel16`, gruppiert nach Ziel, und stuft ein Ziel als
-Inline-String-Routine ein, wenn es ≥ 3 Aufrufstellen hat und bei ≥ 80 % davon
-Text mit Bit-7-Ende folgt. Der Scan läuft über Rohbytes statt über gefundene
-Aufrufstellen — sonst wäre er zirkulär, denn interessant sind gerade die noch
-nicht erreichten Routinen.
+Anyone unaware of this disassembles from the `call` straight into the string
+bytes and derails. `disasm.py` detects such routines by itself: it scans the
+whole image for `call rel16`, groups by target, and classifies a target as an
+inline-string routine when it has at least 3 call sites and text with a bit-7
+terminator follows at 80 % or more of them. The scan runs over raw bytes rather
+than discovered call sites — otherwise it would be circular, since the routines
+worth finding are precisely the ones not yet reached.
 
-Gefunden: `0x5B4C`, `0x5B51`, `0x5B56`, `0x5B62`, `0xAE0A`. Aktuell 50 Strings
-mit 1.647 Byte.
+Found: `0x5B4C`, `0x5B51`, `0x5B56`, `0x5B62`, `0xAE0A`. Currently 50 strings
+totalling 1,647 bytes.
 
-Der Textinterpreter ist selbst kompakt: Zeichen < 0x20 sind Steuercodes
-(0..9 über die Trampolintabelle, 10..31 verschieben `dx`), 0x20..0x67 gehen an
-den vorgewählten Glyphen-Renderer in `bp`, und **Zeichen ≥ 0x68 sind Tokens**,
-die über `[0x5BF0 + 2*Zeichen]` (effektiv ab `0x5CC0`) auf Phrasen im
-String-Pool zeigen. Deshalb tauchten in der ersten Stringsuche nur Fragmente wie
-`SCENARI` oder `FIRE AND FORGE` auf — der letzte Buchstabe trägt Bit 7.
+The text interpreter itself is compact: characters below 0x20 are control codes
+(0 to 9 via the trampoline table, 10 to 31 shift `dx`), 0x20 to 0x67 go to the
+preselected glyph renderer in `bp`, and **characters from 0x68 up are tokens**
+that index `[0x5BF0 + 2*char]`, effectively from `0x5CC0`, into a phrase pool.
+That is why an initial string search only turned up fragments like `SCENARI` or
+`FIRE AND FORGE` — the last letter carries bit 7.
 
-## Betriebssystem-Schnittstelle
+## Operating system interface
 
-Bemerkenswert schmal — das Spiel greift fast alles direkt an der Hardware ab:
+Remarkably narrow; the game drives almost everything straight at the hardware.
 
-| Interrupt | Stellen | Zweck |
+| Interrupt | Sites | Purpose |
 |---|---:|---|
-| `int 21h` | 4 | `AH=30h` DOS-Version, `AH=3Fh` read, `AH=3Eh` close, `AH=4Eh` findfirst |
-| `int 10h` | 5 | BIOS-Videomodus |
-| `int 00h` | 1 | Division durch Null |
+| `int 21h` | 5 | `AH=30h` DOS version, `AH=3Fh` read, `AH=3Eh` close, `AH=4Eh` findfirst |
+| `int 10h` | 5 | BIOS video mode |
+| `int 15h` | 1 | `AX=C200`, PS/2 mouse |
+| `int 00h` | 1 | divide by zero |
 
-Zentraler `int 21h`-Wrapper: `sub_0000_D3A9`. Dateinamen im Klartext bei
-`0xD39F` (`\RETAL`, `RETAL.00`) und `0xDABB` (`\RETAL\RETAL.LOG`). `RETAL.01`
-kommt nicht als Literal vor — die Endziffer wird offenbar hochgezählt.
+Central `int 21h` wrapper: `sub_0000_D3A9`. Filenames in clear at `0xD39F`
+(`\RETAL`, `RETAL.00`) and `0xDABB` (`\RETAL\RETAL.LOG`). `RETAL.01` never
+appears as a literal — the last digit is generated.
 
-Der `.LOG`-Leser sitzt bei `0xDBB4`: liest bis 64 KB, schliesst, vergleicht dann
-gegen `cx = 0x30B` = 779 Byte — exakt die Größe von `RETAL.LOG`.
+The `.LOG` reader sits at `0xDBB4`: reads up to 64 KB, closes, then compares
+against `cx = 0x30B` = 779 bytes, exactly the size of `RETAL.LOG`.
 
-## Bekannte Datenbereiche in X.EXE
+## Known data regions in X.EXE
 
-| Offset | Inhalt |
+| Offset | Contents |
 |---|---|
-| `0x2E8F` | Tastaturtabellen (`1234567890-=`, `qwertyuiop[]`, …) |
-| `0x30A3` | Kopierschutz: `PILOT AUTHORISATION`, `WHICH SECTOR DOES THIS … CONCERN?` |
-| `0x5DEE` | Missionsauswahl: `SCENARIO`, `FIRE AND FORGET`, `TEST RANGE`, `RED ARMY` |
-| `0x7118` | Pilotenlog, Ränge, Medaillen (`PURPLE HEART` … `MEDAL OF HONOUR`) |
-| `0x734A` | Basisnamen und -beschreibungen (`GROOM LAKE`, `USAF RAMSTEIN`, …) |
-| `0x8D62` | Rufzeichen (`RETALIATOR`, `HOUR GLASS`, `SAVIOUR`, …) |
-| `0xD6A7` | Hauptmenü (`RETALIATOR`, `1: ENROL TO…`) |
-| `0xD771` | `RETALIATOR TOP GUN` |
-| `0xFC10` | Segmenttabelle (s. o.) |
+| `0x2E8F` | keyboard tables (`1234567890-=`, `qwertyuiop[]`, ...) |
+| `0x30A3` | copy protection: `PILOT AUTHORISATION`, `WHICH SECTOR DOES THIS ... CONCERN?` |
+| `0x5BEE` | token phrase pool |
+| `0x5CC0` | token table, indexed by character from 0x68 |
+| `0x5DEE` | mission select: `SCENARIO`, `FIRE AND FORGET`, `TEST RANGE`, `RED ARMY` |
+| `0x7118` | pilot log, ranks, medals (`PURPLE HEART` ... `MEDAL OF HONOUR`) |
+| `0x734A` | base names and descriptions (`GROOM LAKE`, `USAF RAMSTEIN`, ...) |
+| `0x8D62` | call signs (`RETALIATOR`, `HOUR GLASS`, `SAVIOUR`, ...) |
+| `0xD6A7` | main menu (`RETALIATOR`, `1: ENROL TO...`) |
+| `0xFBF0` | EGA sequencer register table |
+| `0xFC00` | EGA attribute controller palette (identity) |
+| `0xFC10` | segment table |
+| `0xFC4A` | archive index, `RETAL.00` |
+| `0xFC8E` | archive index, `RETAL.01` |
 
-## Offene Punkte
+## Open
 
-Verbleibende indirekte Sprünge, nach Hebelwirkung sortiert:
+Remaining indirect jumps, by leverage:
 
-| Stelle(n) | Art | Warum offen |
+| Site(s) | Kind | Why still open |
 |---|---|---|
-| 35× `lcall [0xFC14]` | Overlay | Führt aus `X.EXE` heraus. Braucht erst das Archivformat |
-| 11× `call bp` | dynamisch | `bp` wird über mehrere Basisblöcke hinweg gesetzt, einfache Konstantenpropagation reicht nicht |
-| 2× `jmp si` (`0x5B60`, `0x5B66`) | Inline-String | Kein fester Zielort — Rücksprung hinter den jeweiligen String. Wird bereits korrekt behandelt, nur nicht als „Ziel" auflösbar |
-| 2× `call di` (`0x3393`, `0x33B3`) | dynamisch | noch nicht analysiert |
-| `call bx` (`0x9849`), `jmp bx` (`0x9E48`) | dynamisch | noch nicht analysiert |
-| `call [bp+0x2C]`, `call [bp+0x49]`, `call [bx+0xE]`, `jmp [bx+si+5]` | stapel-/strukturrelativ | Zeiger aus Datenstrukturen, brauchen Typanalyse |
+| 35x `lcall [0xFC14]` | overlay | leads out of `X.EXE`; needs the overlay's own dispatch table |
+| 11x `call bp` | dynamic | `bp` is set across basic blocks, simple constant propagation is not enough |
+| 2x `jmp si` (`0x5B60`, `0x5B66`) | inline string | no fixed target — returns past the respective string. Handled correctly already, just not resolvable as a "target" |
+| 2x `call di` (`0x3393`, `0x33B3`) | dynamic | not analysed |
+| `call bx` (`0x9849`), `jmp bx` (`0x9E48`) | dynamic | not analysed |
+| `call [bp+0x2C]`, `call [bp+0x49]`, `call [bx+0xE]`, `jmp [bx+si+5]` | struct-relative | pointers out of data structures, need type analysis |
 
-Sonstiges:
+Other:
 
-- Videomodus-Setup bei `0x6392`/`0x63BB` analysieren (EGA/VGA/Tandy).
-- `lcall 0x14E8:0x1E2A` bei `0xA973` prüfen — vermutlich fehlinterpretierte
-  Daten, das Segment passt zu keinem Tabelleneintrag.
-- Die Fensteranalyse schätzt ~50.976 Byte Code. Erreicht sind 27.629 Byte
-  davon 1.647 Byte Inline-Strings, also **~26.000 Byte Code ≈ 51 % des
-  geschätzten Codes**.
+- Analyse the self-modifying detail-level toggle at `0xA04E`, which patches
+  `0xBBA9` between `nop nop` and `sar ax,1`.
+- Check `lcall 0x14E8:0x1E2A` at `0xA973` — probably misread data, the segment
+  matches no table entry.
+- The windowed analysis estimates ~50,976 bytes of code. 27,629 bytes are
+  reached, of which 1,647 are inline strings, so **~26,000 bytes of code, about
+  51 % of the estimate**.

@@ -1,111 +1,131 @@
-# Architektur
+# Architecture
 
-## Aufgabenteilung 68030 / DSP56001
+## Splitting work between the 68030 and the DSP56001
 
-Das Nachbarprojekt [`f030dsp3d`](../../f030dsp3d) enthält eine vollständige,
-lauffähige 3D-Engine für den Falcon — eigener Code, Ursprung 1994. Sie wird als
-Basis übernommen. Die Aufgabenteilung dort ist für einen Flugsimulator praktisch
-ideal, weil nahezu die gesamte Geometriepipeline auf dem DSP liegt und der
-68030 nur noch füllt.
+The sibling project [`f030dsp3d`](../../f030dsp3d) contains a complete, working
+3D engine for the Falcon — own code, originally from 1994. It is the basis for
+this port. Its division of labour suits a flight simulator almost perfectly,
+because nearly the whole geometry pipeline sits on the DSP and the 68030 is left
+with nothing but filling.
 
-### DSP56001 (32 MHz, 24-Bit-Festkomma)
+### DSP56001 (32 MHz, 24-bit fixed point)
 
-Aus `f030dsp3d/src/3d.asm` (2591 Zeilen), Routinen in Pipeline-Reihenfolge:
+From `f030dsp3d/src/3d.asm` (2,591 lines), in pipeline order:
 
-| Stufe | Zeile | Aufgabe |
+| Stage | Line | Task |
 |---|---|---|
-| Rotationsmatrizen | 2371 | Kamera-, Objekt- und kombinierte Matrix aus sin/cos-Tabelle |
-| Rotate + Translate | 2546 | Punktearray transformieren |
-| 3D-Clipping | 2002 | Polygone an der z-Ebene clippen |
-| Zentralprojektion | 1936 | 3D → 2D, perspektivisch |
-| BSP-Sortierung | 2201 | Flächensortierung über BSP-Baum |
-| 2D-Clipping | 1108 | Sutherland-Hodgman, Ring-Buffer zwingend an `x:$0` |
-| Polygonumwandlung | 1882 | Polygonstruktur für den Filler aufbereiten |
-| LeftRight-Tabelle | 583 | Kantentabelle je Scanline — der 68030 bekommt fertige Spans |
-| Texturgradienten | 884 | Gradienten einer Fläche im Bildschirmraum |
+| Rotation matrices | 2371 | camera, object and combined matrix from a sin/cos table |
+| Rotate and translate | 2546 | transform the point array |
+| 3D clipping | 2002 | clip polygons against the z plane |
+| Perspective projection | 1936 | 3D to 2D |
+| BSP sorting | 2201 | face ordering via a BSP tree |
+| 2D clipping | 1108 | Sutherland-Hodgman, ring buffer must live at `x:$0` |
+| Polygon conversion | 1882 | prepare the polygon structure for the filler |
+| Left/right table | 583 | edge table per scanline — the 68030 receives finished spans |
+| Texture gradients | 884 | gradients of a face in screen space |
 
-Der DSP liefert dem 68030 also **fertige Span-Listen**. Die CPU macht keine
-Geometrie, keine Sortierung, kein Clipping.
+The DSP therefore hands the 68030 **finished span lists**. The CPU does no
+geometry, no sorting, no clipping.
 
-Speicherlayout (DSP-SRAM, 32K Worte à 24 Bit):
+Memory layout (DSP SRAM, 32K words of 24 bit):
 
 ```
-p:$0       Reset-Vektor → main
-p:$22      Host transmit data empty interrupt
-x:$0       Ring-Buffer 2D-Clipping (30*2 Worte) — Adresse ist hardwareseitig fix
-x:$200     Clip-Grenzen, Objektmatrix, Positionsvektoren
-           array_2d_point / array_vector_point   (MAX_POINTS  = 2000, ×3)
-           array_polygon_sorted                  (MAX_POLYGONS = 1000, ×7)
-y:$800     Clip-Kanten, Screen-Offsets, Lichtvektor, Kamera, Betrachter,
-           Objektkopf, sin/cos-Tabelle
+p:$0       reset vector -> main
+p:$22      host transmit data empty interrupt
+x:$0       2D clipping ring buffer (30*2 words) - address is fixed in hardware
+x:$200     clip bounds, object matrix, position vectors
+           array_2d_point / array_vector_point   (MAX_POINTS   = 2000, x3)
+           array_polygon_sorted                  (MAX_POLYGONS = 1000, x7)
+y:$800     clip edges, screen offsets, light vector, camera, viewer,
+           object header, sin/cos table
 ```
 
-Für F29 sind die Budgets zu prüfen: Terrain mit weiter Sichtweite erzeugt
-deutlich mehr Polygone als das Einzelobjekt in `f030dsp3d`.
+These budgets need checking for F29: terrain with a long view distance produces
+considerably more polygons than the single object in `f030dsp3d`. The model
+libraries extracted so far total 233 models with 4,826 vertices and 1,855 faces
+(see [MODEL-FORMAT.md](MODEL-FORMAT.md)), and a mission places several hundred
+object instances (see [WORLD-FORMAT.md](WORLD-FORMAT.md)).
 
 ### 68030 (16 MHz)
 
-Aus `f030dsp3d/src/dp_hc.s` (1037 Zeilen) und `dsp3d.s` (1172 Zeilen):
+From `f030dsp3d/src/dp_hc.s` (1,037 lines) and `dsp3d.s` (1,172 lines):
 
-- **`draw_poly_hc_l`** — Span-Filler über den **Blitter**. Trick: `HOP=%01`
-  (Quelle = Halftone-Register), `OP=%0011` (Ziel = Quelle), `Dst_Xinc=0`,
-  `Dst_Yinc=2`, `X_Count=1`. Damit wird `Y_Count` zur Spanlänge, und der Blitter
-  füllt einen horizontalen Lauf aus 16-Bit-Pixeln. Die Farbe steht im
-  Halftone-Register. Bis zu 65535 Pixel pro Blit.
-- **`draw_quad_tex` / `draw_poly_tex`** — texturierte Flächen, CPU-seitig.
-- **Doppelpufferung** — `work_screen` / `display_screen` werden getauscht.
-- **Dirty-Range-Clear** (`clear_screen4`) — `screen_low_high_work` merkt die
-  berührte Min/Max-Adresse, gelöscht wird nur dieser Bereich. Bei einem
-  Flugsimulator mit Himmel/Boden-Hintergrund ist das potenziell hinfällig, weil
-  ohnehin flächendeckend überschrieben wird — messen.
-- Tastatur, VBL, Objekt-Loader.
+- **`draw_poly_hc_l`** — span filler driven by the **blitter**. The trick:
+  `HOP=%01` (source is the halftone register), `OP=%0011` (destination is
+  source), `Dst_Xinc=0`, `Dst_Yinc=2`, `X_Count=1`. That turns `Y_Count` into
+  the span length and the blitter fills a horizontal run of 16-bit pixels, with
+  the colour held in the halftone register. Up to 65,535 pixels per blit.
+- **`draw_quad_tex` / `draw_poly_tex`** — textured faces, on the CPU.
+- **Double buffering** — `work_screen` and `display_screen` are swapped.
+- **Dirty-range clear** (`clear_screen4`) — `screen_low_high_work` records the
+  touched min/max address and only that range is cleared. For a flight
+  simulator with a sky/ground background this may well be moot, since the frame
+  gets overwritten wholesale anyway. Measure it.
+- Keyboard, VBL, object loader.
 
-## Grafikmodus
+## Video mode
 
-Ziel ist **320x240 True Color**, `f030dsp3d` läuft auf 300x224 True Color. Der
-Unterschied sind Konstanten an zwei Stellen:
+The target is **320x240 True Color**; `f030dsp3d` runs at 300x224 True Color.
+The difference is constants in two places:
 
 - `src/dsp/3d.asm`: `SCREEN_WIDTH` / `SCREEN_HEIGHT`
 - `src/dp_hc.s`: `SCREEN_WIDTH` / `SCREEN_HEIGHT`
 
-### Bandbreite
+### Bandwidth
 
-Der wesentliche Engpass auf einem 16-MHz-Falcon ist der 16-Bit-ST-RAM-Bus, den
-sich CPU, Blitter und VIDEL teilen. Der Bildschirmspeicher muss im ST-RAM
-liegen, weil VIDEL nur von dort DMA machen kann; ein 4-MB-Falcon hat ohnehin
-kein Fast-RAM.
+The main bottleneck on a 16 MHz Falcon is the 16-bit ST-RAM bus, shared between
+CPU, blitter and VIDEL. Screen memory has to live in ST-RAM because VIDEL can
+only DMA from there, and a 4 MB Falcon has no fast RAM anyway.
 
-| Modus | Bytes/Frame | VIDEL-Refresh bei 60 Hz |
-|---|---|---|
-| 320x240 True Color | 153.600 | ~9,2 MB/s |
-| 300x224 True Color (f030dsp3d) | 134.400 | ~8,1 MB/s |
-| 320x240, 8 Bit | 76.800 | ~4,6 MB/s |
+| Mode | Bytes per frame | VIDEL refresh at 60 Hz |
+|---|---:|---|
+| 320x240 True Color | 153,600 | ~9.2 MB/s |
+| 300x224 True Color (f030dsp3d) | 134,400 | ~8.1 MB/s |
+| 320x240, 8 bit | 76,800 | ~4.6 MB/s |
 
-True Color kostet also rund die doppelte Refresh-Bandbreite gegenüber 8 Bit,
-spart im Gegenzug aber die C2P-Wandlung komplett ein und macht den Rasterizer
-linear adressierbar.
+True Color costs roughly double the refresh bandwidth of 8 bit, but saves the
+C2P conversion entirely and keeps the rasterizer linearly addressable.
 
-### Rückfallebene 8 Bit
+### Falling back to 8 bit
 
-Falls die Framerate nicht reicht, soll der Wechsel auf 8 Bit + DSP-C2P lokal
-bleiben. Dafür gilt:
+If the frame rate does not hold up, the switch to 8 bit plus DSP C2P should stay
+local. For that:
 
-- Pixelbreite nur über eine Konstante (`BYTES_PER_PIXEL`) ausdrücken, nie
-  literal `2` im Code.
-- Farbwerte über eine Indirektion (`colour_table`) statt direkter RGB-Werte im
-  Halftone-Register.
-- Der Blitter-Span-Filler funktioniert in 8 Bit nicht unverändert — planar. Die
-  Filler-Schnittstelle (Eingabe: LeftRight-Tabelle vom DSP) bleibt aber gleich,
-  nur die Implementierung dahinter tauscht.
+- Express pixel width only through a constant (`BYTES_PER_PIXEL`), never a
+  literal `2` in the code.
+- Route colour values through an indirection (`colour_table`) rather than
+  putting RGB straight into the halftone register.
+- The blitter span filler does not survive the switch unchanged — 8 bit is
+  planar. The filler's interface (input: the left/right table from the DSP)
+  stays the same though; only the implementation behind it is swapped.
+
+## Source data
+
+The original artwork is byte-interleaved planar, which is the Atari ST's native
+arrangement, and the type-1 loader in the DOS version already demonstrates the
+conversion to chunky — the direction this port needs. See
+[RESOURCE-FORMATS.md](RESOURCE-FORMATS.md).
+
+Conversion belongs in an offline asset build, not at run time, and has to be
+field-aware: a blanket 16-bit byte swap would destroy bitmaps, text and RLE
+streams, where byte order is structural rather than numeric. Alignment matters
+as much as endianness — the 68000 traps on odd word accesses and the 68030 pays
+in cycles. The 24-bit offsets in the archive index should widen to 32 bit;
+`move.l` is one instruction instead of three.
+
+Since converted assets may not be redistributed, the converter has to run on the
+user's machine, at install time or first launch with a cache.
 
 ## Build
 
-Kein `make` auf diesem Rechner. Der Build läuft über Bash-Skripte wie in
+No `make` on the development machine. The build is bash scripts, as in
 `f030dsp3d`:
 
-- `tools/build-run.sh` — vasm je Quelldatei, dann vlink → `.TOS`
-- `tools/build-dsp.sh` — ASM56000 unter DOSBox (DOS4GW, braucht 8.3-Namen),
-  danach CLDLOD → `.LOD`
-- `tools/run.sh` — Hatari mit Falcon-Maschine und DSP-Emulation
+- `tools/build-run.sh` — vasm per source file, then vlink to `.TOS`
+- `tools/build-dsp.sh` — ASM56000 under DOSBox (DOS4GW, needs 8.3 names), then
+  CLDLOD to `.LOD`
+- `tools/run.sh` — Hatari with a Falcon machine and DSP emulation
 
-vlink-Aufruf: `-tos-fastload -b ataritos -e start`, vasm: `-Felf -m68030`.
+vlink is invoked as `-tos-fastload -b ataritos -e start`, vasm as
+`-Felf -m68030`. Every tool path can be overridden by an environment variable;
+see the README.

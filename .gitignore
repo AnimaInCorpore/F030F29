@@ -1,4 +1,4 @@
-# Build-Artefakte
+# Build artefacts
 build/
 release/
 *.o
@@ -7,11 +7,11 @@ hatari.log
 __pycache__/
 *.pyc
 
-# Originalspiel und alles daraus Abgeleitete.
+# The original game and everything derived from it.
 #
-# Das Repository enthaelt bewusst KEINE Spieldaten von Ocean / Digital Image
-# Design - weder das Original noch extrahierte, entpackte oder gerenderte
-# Fassungen davon. Nutzer bringen ihre eigene Kopie mit (siehe README).
+# This repository deliberately contains NO game data from Ocean / Digital Image
+# Design - neither the originals nor extracted, decompressed or rendered
+# versions of them. Users bring their own copy; see the README.
 assets/
 re/resources/
 re/unpacked/

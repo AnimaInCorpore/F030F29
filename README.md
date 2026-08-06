@@ -1,83 +1,104 @@
-# F030F29 — F29 Retaliator für Atari Falcon030
+# F030F29 — F29 Retaliator for the Atari Falcon030
 
-Portierung des DOS-Spiels *F29 Retaliator* (Digital Image Design / Ocean, 1990)
-auf den Atari Falcon030.
+A port of the DOS game *F29 Retaliator* (Digital Image Design / Ocean, 1990) to
+the Atari Falcon030.
 
-## Projektentscheidungen
+## Project decisions
 
-| Thema | Entscheidung |
+| Topic | Decision |
 |---|---|
-| Ansatz | 1:1-Port via Reverse Engineering — `X.EXE` wird disassembliert und die x86-Realmode-Logik funktionsweise nach 68030 übersetzt |
-| Sprache | Reines 68030-Assembler (vasm, Motorola-Syntax) + DSP56001-Assembler |
-| Grafikmodus | 320x240, True Color (16 Bit, 2 Byte/Pixel) |
-| Zielhardware | Standard-Falcon030, 16 MHz, 4 MB, ohne FPU |
+| Approach | 1:1 port via reverse engineering — `X.EXE` is disassembled and its x86 real-mode logic translated function by function to 68030 |
+| Language | Pure 68030 assembly (vasm, Motorola syntax) plus DSP56001 assembly |
+| Video mode | 320x240, True Color (16 bit, 2 bytes per pixel) |
+| Target | Stock Falcon030, 16 MHz, 4 MB, no FPU |
 
-Der Rasterizer ist so gegliedert, dass ein späterer Wechsel auf 8 Bit + C2P eine
-lokalisierte Änderung bleibt (siehe [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+The rasterizer is structured so that a later switch to 8 bit plus C2P stays a
+localised change — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Ausgangsmaterial
+## Game data
 
-`assets/F29_Retaliator_1990.zip` enthält zu ~95 % eine DOSBox-Distribution. Das
-eigentliche Spiel sind drei Dateien in `F29Retal/Retal/` — zusammen ~670 KB:
+**This repository contains no game data.** Neither the original files nor
+anything extracted, decompressed or rendered from them. *F29 Retaliator* is
+copyright Ocean Software / Digital Image Design; you need your own copy.
 
-| Datei | Größe | Inhalt |
-|---|---|---|
-| `X.EXE` | 68.640 B | DOS-MZ-Realmode-Executable, ungepackt, 68.128 B Code+Daten, 4 Relocations. Alle UI-Texte im Klartext ab Offset `0x30A3` |
-| `RETAL.00` | 239.200 B | Daten, Entropie 5,76 — keine Strings |
-| `RETAL.01` | 359.172 B | Daten, Entropie 5,53 — keine Strings |
-
-Die vorliegende Kopie ist ein Crack-Release. Original-Assets werden deshalb
-**nicht** mit ausgeliefert: die Engine lädt `RETAL.00`/`RETAL.01` zur Laufzeit,
-Nutzer müssen ihre eigene Kopie mitbringen — Vorgehen wie bei OpenTTD oder
-Devilution.
-
-## Bauen
+Point the tools at your own installation:
 
 ```bash
-./tools/build-run.sh
+python tools/re/unpack.py --dir /path/to/retal --extract
+python tools/re/decompress.py --write
 ```
 
-Erzeugt `release/f29.tos` (gestrippt) und `release/f29_d.tos` (mit Symbolen).
+The engine will load `RETAL.00` / `RETAL.01` at runtime, the same arrangement
+OpenTTD and Devilution use.
 
-```bash
-./tools/build-dsp.sh
-```
+## Reverse engineering
 
-Assembliert `src/dsp/*.asm` nach `release/*.lod`. Braucht DOSBox Staging, weil
-ASM56000 ein DOS4GW-Programm ist.
+The original is ~51 KB of x86 real-mode code in `X.EXE` (roughly 23,000
+instructions) plus 598 KB of data in two resource archives. Everything found so
+far is written up in `docs/`:
 
-```bash
-./tools/run.sh
-```
-
-Startet den Build in Hatari (Falcon, DSP-Emulation, TOS 4.02).
-
-## Toolchain
-
-Alle Werkzeuge sind bereits auf diesem Rechner vorhanden und werden aus den
-Nachbarprojekten referenziert — es wird nichts nachinstalliert:
-
-| Werkzeug | Pfad |
+| Document | Contents |
 |---|---|
-| vasm (m68k/mot) | `C:/Arbeit/F030Arcade/third_party/vasm/vasmm68k_mot.exe` |
-| vlink | `C:/Arbeit/F030Arcade/third_party/vlink/vlink.exe` |
-| ASM56000 (DSP) | `C:/Arbeit/f030dsp3d/tools/asm56k/` (via DOSBox Staging) |
-| Hatari | `C:/Arbeit/F030Arcade/third_party/hatari/build-ucrt64/src/hatari.exe` |
-| TOS 4.02 ROM | `C:/Arbeit/f030dsp3d/tools/tos402.rom` |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the port divides work between the 68030 and the DSP |
+| [RE-NOTES.md](docs/RE-NOTES.md) | `X.EXE` memory layout, resolved indirect dispatchers, inline-string idiom |
+| [ARCHIVE-FORMAT.md](docs/ARCHIVE-FORMAT.md) | container format of `RETAL.00` / `RETAL.01` |
+| [RESOURCE-FORMATS.md](docs/RESOURCE-FORMATS.md) | RLE compression and the seven resource type handlers |
+| [MODEL-FORMAT.md](docs/MODEL-FORMAT.md) | 3D model libraries |
+| [WORLD-FORMAT.md](docs/WORLD-FORMAT.md) | world object placement lists |
 
-`make` ist auf diesem Rechner nicht installiert — der Build läuft über
-Bash-Skripte, wie in `f030dsp3d`.
+### Tools
 
-## Verzeichnisse
+All in `tools/re/`, Python 3 with [capstone](https://www.capstone-engine.org/):
+
+| Tool | Purpose |
+|---|---|
+| `mzinfo.py` | MZ header, relocations, segment layout |
+| `disasm.py` | recursive-descent disassembler with constant propagation and automatic inline-string detection |
+| `codemap.py` | separates code from data by windowed analysis |
+| `peek.py` | disassemble or dump an arbitrary address |
+| `xref.py` | find callers of an address by scanning raw bytes |
+| `unpack.py` | extract resources from the archives |
+| `decompress.py` | RLE decompression |
+| `render.py` | render image resources to PNG |
+| `models.py` | parse the 3D model libraries |
+| `objects.py` | parse the world object placement lists |
+
+`re/seeds.txt` records every resolved indirect jump target together with the
+evidence for it; `disasm.py` reads it automatically.
+
+## Building
+
+```bash
+./tools/build-run.sh      # 68030 side  -> release/f29.tos
+./tools/build-dsp.sh      # DSP side    -> release/3d.lod
+./tools/run.sh            # launch in Hatari
+```
+
+`make` is not required; the build is plain bash.
+
+### Toolchain
+
+The scripts default to paths on the original development machine but every one
+of them can be overridden by an environment variable:
+
+| Variable | Tool |
+|---|---|
+| `VASM` | vasm, m68k, Motorola syntax |
+| `VLINK` | vlink |
+| `ASM56K` | directory holding `ASM56000.EXE`, `CLDLOD.EXE`, `DOS4GW.EXE` |
+| `DOSBOX` | DOSBox, needed because ASM56000 is a DOS4GW program |
+| `HATARI` | Hatari |
+| `TOS` | TOS 4.02 ROM image |
+
+vasm is invoked as `-Felf -m68030`, vlink as `-tos-fastload -b ataritos -e start`.
+
+## Layout
 
 ```
-assets/     DOS-Original (unverändert) + extrahierte Rohdateien
-docs/       Architektur, RE-Notizen
-re/         RE-Artefakte: Disassembly-Listings, Symbolkarten
-src/        68030-Assembler
-src/dsp/    DSP56001-Assembler
-tools/re/   Reverse-Engineering-Werkzeuge (Python)
-tools/      Build- und Runner-Skripte
-build/      Objektdateien
-release/    Fertige .TOS und .LOD
+docs/       architecture and format documentation
+re/         seeds.txt; generated listings and resources land here (ignored)
+src/        68030 assembly
+src/dsp/    DSP56001 assembly
+tools/re/   reverse-engineering tools
+tools/      build and runner scripts
 ```
