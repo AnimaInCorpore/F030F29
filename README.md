@@ -39,12 +39,17 @@ far is written up in `docs/`:
 
 | Document | Contents |
 |---|---|
+| [ENGINE.md](docs/ENGINE.md) | what is in `src/`, how to build it and how to check it |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the port divides work between the 68030 and the DSP |
 | [RE-NOTES.md](docs/RE-NOTES.md) | `X.EXE` memory layout, resolved indirect dispatchers, inline-string idiom |
 | [ARCHIVE-FORMAT.md](docs/ARCHIVE-FORMAT.md) | container format of `RETAL.00` / `RETAL.01` |
 | [RESOURCE-FORMATS.md](docs/RESOURCE-FORMATS.md) | RLE compression and the seven resource type handlers |
 | [MODEL-FORMAT.md](docs/MODEL-FORMAT.md) | 3D model libraries |
 | [WORLD-FORMAT.md](docs/WORLD-FORMAT.md) | world object placement lists |
+| [SOUND-DRIVER.md](docs/SOUND-DRIVER.md) | the overlay driver, its API and the music data |
+| [ADLIB-BACKEND.md](docs/ADLIB-BACKEND.md) | OPL2 emission, instruments, the pitch table |
+| [MPU401-BACKEND.md](docs/MPU401-BACKEND.md) | the MIDI / MT-32 path |
+| [DISPLAY-LIST.md](docs/DISPLAY-LIST.md) | a vector interpreter, and what it is not |
 
 ### Tools
 
@@ -69,12 +74,17 @@ evidence for it; `disasm.py` reads it automatically.
 ## Building
 
 ```bash
-./tools/build-run.sh      # 68030 side  -> release/f29.tos
-./tools/build-dsp.sh      # DSP side    -> release/3d.lod
-./tools/run.sh            # launch in Hatari
+./tools/build-run.sh                          # 68030 side -> release/f29.tos
+./tools/build-dsp.sh                          # DSP side   -> release/3d.lod
+./tools/run.sh                                # launch in Hatari
+./tools/grab-frame.sh 1500 build/frame.png    # headless screenshot
 ```
 
 `make` is not required; the build is plain bash.
+
+Grab frames at 1500 VBLs or later. Earlier than that and the program has not
+finished starting, so what you get is the TOS desktop — see
+[ENGINE.md](docs/ENGINE.md).
 
 ### Toolchain
 
@@ -97,8 +107,20 @@ vasm is invoked as `-Felf -m68030`, vlink as `-tos-fastload -b ataritos -e start
 ```
 docs/       architecture and format documentation
 re/         seeds.txt; generated listings and resources land here (ignored)
-src/        68030 assembly
-src/dsp/    DSP56001 assembly
+src/        68030 assembly - the engine
+src/dsp/    DSP56001 assembly - the geometry pipeline
+src/inc/    included sources, deliberately outside the build glob
 tools/re/   reverse-engineering tools
-tools/      build and runner scripts
+tools/      build, runner and frame-grab scripts
 ```
+
+## Status
+
+The reverse engineering is broad: the archive, the compression, the image,
+model and world formats and the sound driver are all decoded, and the
+disassembly reaches 44.6 % of `X.EXE`.
+
+The port itself has just started. The engine builds and renders at 320x240 true
+colour in Hatari; the flight model, game logic, HUD and menus are not written.
+The frame rate has not been measured, so the bandwidth argument behind the
+video-mode choice is still arithmetic rather than evidence.
