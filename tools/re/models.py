@@ -93,8 +93,11 @@ def parse_model(d: bytes, pos: int):
         if record is None:
             break
         n, colour, rbase, size = record
-        if not 1 <= n <= 16 or p + size > len(d):
+        if n > 16 or p + size > len(d):
             break
+        if n == 0:                       # stream control, consumes no vertices
+            p += size
+            continue
         refs = struct.unpack_from(f"<{n}H", d, rbase)
         if any(r % 6 or r // 6 >= count for r in refs):
             break
