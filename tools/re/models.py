@@ -7,9 +7,25 @@ Layout, derived from the data and the parser at 0x431A:
     n * 6       vertices: X, Y, Z as 16-bit signed little endian
     faces       records of: marker, colour byte, then one 16-bit word per corner
 
-The marker encodes the corner count in steps of four: 0x24 is a triangle, 0x28
-a quad, 0x2C a pentagon, so corners = (marker >> 2) - 6.  A face record is
-therefore 2 + 2*corners bytes long.
+The marker is not an encoded corner count.  Every marker observed is a multiple
+of four and none relates arithmetically to the number of corners, so it is a
+byte offset into a primitive-type dispatch table in the renderer and each
+primitive has its own record layout:
+
+    0x04   3 corners, colour in byte 1, refs from byte 2            ( 8 bytes)
+    0x14   3 corners, no colour byte,   refs from byte 1,
+           plus one trailing word                                   ( 9 bytes)
+    0x1C   2 corners, colour in byte 1, refs from byte 2            ( 6 bytes)
+    0x20   1 corner,  colour in byte 1, ref  from byte 2,
+           plus one parameter word                                  ( 6 bytes)
+    0x24   3 corners, colour in byte 1, refs from byte 2            ( 8 bytes)
+    0x28   4 corners, colour in byte 1, refs from byte 2            (10 bytes)
+    0x2C   corner count in byte 1, colour in byte 2, refs from byte 3
+
+Each layout was checked against every occurrence: refs come out as multiples of
+six inside the model's own vertex array, and the byte after the record is always
+a valid marker or the 0x00 terminator.  Further markers exist - 0x0C in
+particular - whose layout is not known; see docs/MODEL-FORMAT.md.
 
 The words in a face record are **byte offsets** into the vertex array, not
 indices - vertex k sits at offset 6*k.  Verified two ways: the quad
@@ -22,16 +38,37 @@ import argparse
 import struct
 import sys
 
-MARKER_MIN, MARKER_MAX = 0x1C, 0x3C
-COORD_LIMIT = 20000        # coordinates far beyond this are not model space
+# Marker to record layout.  The markers are all multiples of four and bear no
+# arithmetic relation to the corner count, so this is a byte offset into a
+# primitive-type dispatch table in the renderer, and every type has its own
+# record shape.  Each entry below was verified against every occurrence: the
+# refs come out as multiples of six inside the model's own vertex array, and
+# the byte after the record is a valid marker or the 0x00 terminator.
+FIXED_CORNERS = {0x04: 3, 0x1C: 2, 0x24: 3, 0x28: 4}
+MARKER_COUNTED = 0x2C          # corner count sits in the following byte
+MARKER_POINT = 0x20            # single vertex plus a 16-bit parameter
+MARKER_UNCOLOURED = 0x14       # no colour byte: three refs plus a trailing word
+COORD_LIMIT = 20000            # coordinates far beyond this are not model space
 
 
-def corners(marker: int) -> int:
-    return (marker >> 2) - 6
-
-
-def is_marker(b: int) -> bool:
-    return MARKER_MIN <= b <= MARKER_MAX and b % 4 == 0
+def face_record(data: bytes, pos: int):
+    """Return (corners, colour, first-ref offset, record size) or None."""
+    if pos + 2 > len(data):
+        return None
+    marker = data[pos]
+    if marker in FIXED_CORNERS:
+        n = FIXED_CORNERS[marker]
+        return n, data[pos + 1], pos + 2, 2 + 2 * n
+    if marker == MARKER_COUNTED and pos + 3 <= len(data):
+        n = data[pos + 1]
+        return n, data[pos + 2], pos + 3, 3 + 2 * n
+    if marker == MARKER_POINT:
+        # colour, one vertex reference, one parameter word - six bytes.
+        return 1, data[pos + 1], pos + 2, 6
+    if marker == MARKER_UNCOLOURED:
+        # marker, three refs, one trailing word - nine bytes, no colour byte.
+        return 3, None, pos + 1, 9
+    return None
 
 
 def parse_model(d: bytes, pos: int):
@@ -51,16 +88,18 @@ def parse_model(d: bytes, pos: int):
         verts.append((x, y, z))
 
     faces, p = [], vbase + count * 6
-    while p + 2 <= len(d) and is_marker(d[p]):
-        n = corners(d[p])
-        if n < 2 or p + 2 + 2 * n > len(d):
+    while p + 2 <= len(d):
+        record = face_record(d, p)
+        if record is None:
             break
-        colour = d[p + 1]
-        refs = struct.unpack_from(f"<{n}H", d, p + 2)
+        n, colour, rbase, size = record
+        if not 1 <= n <= 16 or p + size > len(d):
+            break
+        refs = struct.unpack_from(f"<{n}H", d, rbase)
         if any(r % 6 or r // 6 >= count for r in refs):
             break
         faces.append((colour, [r // 6 for r in refs]))
-        p += 2 + 2 * n
+        p += size
 
     if not faces:
         return None
