@@ -15,11 +15,15 @@ sits at `0xECF1`-`0xED8C`:
 
 | Resource | Load site | Parser | Content |
 |---|---|---|---|
-| 8 | `mov ax,0x208` at `0xECF1` | `0x75FC` | model library |
+| 8 | `mov ax,0x208` at `0xECF1` | — | model library |
 | 9 | `mov ax,0x209` at `0xED5B` | `0x431A` | model library |
 | 10 | `mov ax,0x20A` at `0xED6F` | `0x438D` | model library |
 | 11 | `mov ax,0x20B` at `0xED80` | `0x4490` | model library |
 | 12 | `mov ax,0x20C` at `0xECE0` | — | object placement, see [WORLD-FORMAT.md](WORLD-FORMAT.md) |
+
+`0x75FC`, the call that follows loading resource 8, is *not* a parser — it is a
+per-theatre parameter lookup over a table of 6-byte records indexed through
+`[0xE993]`. Resource 8's parser has not been identified.
 
 All four of 8-11 parse with the same grammar, so the differing parsers are
 about where the models are filed, not how they are encoded. `0x431A` in

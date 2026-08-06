@@ -68,15 +68,44 @@ repeat opcodes are exactly the instruction set for that.
 
 ## Still looking for the model renderer
 
-It dispatches through a table as well — a scan for `cmp al,0x28`, `cmp bl,0x28`
-and `cmp cl,0x28` across the whole image finds **no** comparison against the
-most common marker, so it is not a compare chain.
-
-Searching for runs of ten or more consecutive plausible code pointers turns up
-only data tables (monotonically rising values at a constant stride). Candidate
-indirect sites not yet run down: `jmp [bx-0x5943]` at `0xA77E` (base `0xA6BD`,
-adjacent to the known 13-entry HUD table at `0xA6D7`) and `jmp [bx-0x3467]` at
-`0xCB8B` (base `0xCB99`).
-
 Tool: `tools/re/findtable.py` lists every indirect near call/jmp with a memory
 operand together with its lead-in, which is how `0x477A` was found.
+
+### Ruled out
+
+| Site | Why not |
+|---|---|
+| `0xA77E` `jmp [bx-0x5943]` | `pop bx / shl bl,1` — the index comes off the stack and is scaled. Base `0xA6BD` sits next to the known 13-entry HUD table at `0xA6D7`, so this is the HUD family |
+| `0xCB8B` `jmp [bx-0x3467]` | preceded by `in al, dx` and `and bl, 6` — reads a hardware port and dispatches four ways. Joystick or serial handling |
+| `0x8F26` `call [bx-0x70C4]` | already resolved, 4 entries, HUD |
+| `0x4777` | the interpreter above, see the previous section |
+
+`0x75FC` is not a parser either, despite being the call that follows loading
+resource 8. It is a per-theatre parameter lookup: `mov si,0x7627` or `0x7681`,
+`si += 6*al`, then two words are read out of a table of 6-byte records indexed
+through `[0xE993]`.
+
+### What the search has established
+
+- **Not a compare chain.** A scan for `cmp al,0x28`, `cmp bl,0x28` and
+  `cmp cl,0x28` across the whole image finds no comparison against the most
+  common model marker at all.
+- **It does not read the marker with `lodsb`.** Exactly two sites in the image
+  have a `lodsb` followed by an indirect call or jump within six instructions:
+  `0x4777` and `0x8F1D`. Both are ruled out above.
+- Searching for runs of ten or more consecutive plausible code pointers turns
+  up only data tables — monotonically rising values at a constant stride.
+
+### Where to look next
+
+The most promising reading of those constraints is that the markers are never
+seen at draw time at all: the load-path parsers (`0x431A`, `0x438D`, `0x4490`)
+build linked runtime structures — `0x451A` clears 51 bytes per entry — so the
+marker may well be decoded while converting the face records into that runtime
+form, and the renderer then walks the converted structure with no markers left
+in it.
+
+That would put the dispatch in the loader rather than the renderer, and quite
+possibly in the roughly 59 % of `X.EXE` that recursive descent has not reached
+yet. Raising overall coverage is therefore likely to be a better use of effort
+than more targeted searching.
