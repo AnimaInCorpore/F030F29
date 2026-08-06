@@ -66,6 +66,32 @@ longwords rather than sixteen words.
 `background`, `clear_screen`, `clear_screen2`, `clear_screen3` and
 `clear_screen4` are all gone with it — 142 lines removed.
 
+## F29 models on the Falcon
+
+`tools/re/model2o3d.py` converts a model out of the decoded libraries into the
+`.o3d` file the engine loads, computing face normals and building the BSP tree
+the DSP walks. That closes the loop from original game data to the target
+screen.
+
+```bash
+python tools/re/model2o3d.py --list
+python tools/re/model2o3d.py --index 2 -o release/model.o3d
+```
+
+Two things came out of getting the first model to render.
+
+**F29 winds its faces the other way round.** With the normals as computed from
+the vertex order, every face is back-facing and the model is invisible bar the
+odd stray polygon — the first render was an empty horizon with a single white
+speck. Reversing them is therefore the default; `--keep-winding` turns it off.
+
+**Line primitives do not render.** The `0x1C` face marker means two corners,
+which is a line, and the flat-shaded filler has nothing to fill — a two-corner
+face has no area. Across the four libraries that is 397 of 3,593 faces, and 27
+of 299 models are mostly lines; those come out as a thin streak. Runway
+markings and antennae are the likely subjects. Drawing them needs a line
+routine the engine does not have.
+
 ## Files
 
 | File | Lines | Purpose |

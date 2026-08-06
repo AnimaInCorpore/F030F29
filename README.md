@@ -67,6 +67,7 @@ All in `tools/re/`, Python 3 with [capstone](https://www.capstone-engine.org/):
 | `render.py` | render image resources to PNG |
 | `models.py` | parse the 3D model libraries |
 | `objects.py` | parse the world object placement lists |
+| `model2o3d.py` | convert an F29 model into the engine's `.o3d` format |
 
 `re/seeds.txt` records every resolved indirect jump target together with the
 evidence for it; `disasm.py` reads it automatically.
