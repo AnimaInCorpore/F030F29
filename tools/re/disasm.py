@@ -38,6 +38,32 @@ CONDITIONAL = {
 }
 CALLS = {"call", "lcall"}
 FAR = {"lcall", "ljmp"}
+# Opcodes that essentially never appear in hand-written game code.  Used to
+# reject byte-scan candidates that are really data.
+JUNK_OPS = {"aaa", "aad", "aam", "aas", "daa", "das", "into", "salc", "hlt",
+            "arpl", "bound", "lock", "in", "out", "iret", "sahf", "lahf"}
+# Registers this program genuinely uses to hold a function pointer.  See
+# resolve_register_calls for why the list is this short.
+FUNCTION_POINTER_REGS = {"bp"}
+
+# Regions proven to be data elsewhere in the analysis (see docs/RE-NOTES.md and
+# docs/ARCHIVE-FORMAT.md).  Anything that widens the sweep has to leave these
+# alone; if the disassembler starts "reaching" them it is manufacturing code out
+# of data and the extra coverage is worthless.  The keyboard tables at 0x2E8F
+# are reached even by the plain descent and are a known, pre-existing exception.
+KNOWN_DATA = {
+    0x2E8F: "keyboard tables",
+    0x30A3: "copy-protection text",
+    0x5BF0: "token phrase pool",
+    0x5CC0: "token table",
+    0x734A: "base names",
+    0x8D62: "call signs",
+    0xFC00: "EGA palette",
+    0xFC16: "segment table",
+    0xFC4A: "archive index RETAL.00",
+    0xFC8E: "archive index RETAL.01",
+}
+EXPECTED_DATA_HITS = {0x2E8F}
 FAR_IMM = re.compile(r"^\s*(0x[0-9a-f]+)\s*:\s*(0x[0-9a-f]+)\s*$", re.I)
 
 
@@ -144,13 +170,21 @@ class Disassembler:
         self.far_refs.clear()
         self.strings.clear()
 
-    def run_to_fixpoint(self, seeds: list[Addr], max_passes: int = 8) -> int:
+    def run_to_fixpoint(self, seeds: list[Addr], max_passes: int = 8,
+                        scan_calls: int = 0) -> int:
         """Alternate descent and inline-string detection until nothing new.
 
         An unrecognised inline-string routine derails the sweep into the string
         bytes, so each newly detected one typically unlocks further code, which
         may in turn reveal more such routines.
+
+        With scan_calls set, byte-scanned call targets are added to the seed
+        set as well; the value is the minimum number of call sites a target
+        needs before it is trusted.
         """
+        seeds = list(seeds)
+        if scan_calls:
+            seeds.extend(self.scan_call_targets(min_sites=scan_calls))
         passes = 0
         while passes < max_passes:
             passes += 1
@@ -158,9 +192,11 @@ class Disassembler:
             self.run(seeds)
             found = self._detect_inline_string_routines()
             new = found - self.inline_string_routines
-            if not new:
+            extra = self.resolve_register_calls() - set(seeds)
+            if not new and not extra:
                 break
             self.inline_string_routines |= new
+            seeds.extend(extra)
         return passes
 
     def _detect_inline_string_routines(self) -> set:
@@ -191,6 +227,81 @@ class Disassembler:
             if good >= max(3, int(len(sites) * 0.8)):
                 found.add(target)
         return found
+
+    def scan_call_targets(self, min_sites: int = 1, probe: int = 10) -> set:
+        """Byte-scan the image for `call rel16` targets that look like code.
+
+        Recursive descent only finds a routine once something reaches it, so a
+        function whose only callers sit in unreached code stays invisible even
+        though its call sites are plainly there in the bytes.  Scanning for the
+        call encoding directly breaks that circle.
+
+        Every candidate is probed before being accepted: disassembling from it
+        has to yield `probe` instructions with no decode failure and no opcode
+        that real program text does not contain.  Raising min_sites to 2 asks
+        for corroboration from a second call site, which trades reach for
+        certainty.
+        """
+        sites = defaultdict(int)
+        for pos in range(len(self.image) - 2):
+            if self.image[pos] != 0xE8:
+                continue
+            rel = struct.unpack_from("<h", self.image, pos + 1)[0]
+            seg = 0 if pos < 0x10000 else TAIL_SEGMENT
+            sites[Addr(seg, (pos - (seg << 4)) + 3 + rel)] += 1
+
+        accepted = set()
+        for target, count in sites.items():
+            if count < min_sites or not 0 <= target.linear < len(self.image):
+                continue
+            if self._probe_code(target, probe):
+                accepted.add(target)
+        return accepted
+
+    def resolve_register_calls(self) -> set:
+        """Targets for `call reg` / `jmp reg`, from immediates loaded into reg.
+
+        Eleven `call bp` sites survive the descent because the register is
+        loaded in a different basic block than the call, so the intra-run
+        constant propagation never sees it.  The inference that works is the
+        other way round: if the program loads a constant into bp anywhere and
+        elsewhere does `call bp`, that constant is a function entry.
+
+        Only bp qualifies, and the restriction is not cosmetic - it was
+        measured.  Admitting bx as well takes coverage from 41.8 % to 48.5 %
+        but drags in five regions that are provably data, including both
+        archive indices; adding di brings in the EGA palette and the segment
+        table too.  The reason is that those registers hold data pointers in
+        most contexts, so `mov si, 0xFC00` (the palette) would be seeded as
+        code merely because `jmp si` occurs elsewhere - and that `jmp si` is
+        the inline-string return, not a function pointer at all.
+        """
+        indirect_regs = {ops.strip() for _, mnem, ops in self.indirect
+                         if ops.strip() in FUNCTION_POINTER_REGS}
+        if not indirect_regs:
+            return set()
+
+        found = set()
+        for addr, insn in self.insns.items():
+            if insn.mnemonic != "mov" or len(insn.operands) != 2:
+                continue
+            dst, src = insn.operands
+            if dst.type != X86_OP_REG or src.type != X86_OP_IMM:
+                continue
+            if insn.reg_name(dst.reg) not in indirect_regs:
+                continue
+            target = Addr(addr.seg, src.imm & 0xFFFF)
+            if 0 <= target.linear < len(self.image) and self._probe_code(target, 10):
+                found.add(target)
+        return found
+
+    def _probe_code(self, addr: Addr, want: int) -> bool:
+        """True if `want` instructions decode cleanly from addr."""
+        window = self.image[addr.linear:addr.linear + want * 8]
+        decoded = list(self.md.disasm(window, addr.off, want))
+        if len(decoded) < want:
+            return False
+        return not any(i.mnemonic in JUNK_OPS for i in decoded)
 
     def _looks_like_string(self, start: Addr, minlen: int = 3, maxlen: int = 200) -> bool:
         pos, n = start.linear, 0
@@ -316,6 +427,13 @@ def main() -> None:
                     help="extra entry point as SEG:OFF hex (repeatable)")
     ap.add_argument("--seeds", default="re/seeds.txt",
                     help="file of resolved indirect targets, one SEG:OFF per line")
+    ap.add_argument("--scan-calls", type=int, nargs="?", const=1, default=2,
+                    metavar="MIN_SITES",
+                    help="also seed byte-scanned call targets; the value is how "
+                         "many call sites a target needs before it is trusted. "
+                         "The default of 2 is the highest setting that leaves "
+                         "every known data region alone; 1 reaches 66%% but "
+                         "disassembles seven of them as code")
     args = ap.parse_args()
 
     file_seeds = []
@@ -336,7 +454,7 @@ def main() -> None:
 
     seeds = [Addr(cs, ip)] + [parse_addr(s) for s in args.seed] + file_seeds
     d = Disassembler(image)
-    passes = d.run_to_fixpoint(seeds)
+    passes = d.run_to_fixpoint(seeds, scan_calls=args.scan_calls)
 
     covered, gaps = d.coverage()
     total = len(image)
@@ -347,6 +465,21 @@ def main() -> None:
     print(f"inline strings: {len(d.strings)} totalling {strbytes} bytes, "
           f"from {len(d.inline_string_routines)} routines")
     print("  " + " ".join(str(r) for r in sorted(d.inline_string_routines)))
+    print()
+
+    reached = set()
+    for a, insn in d.insns.items():
+        reached.update(range(a.linear, a.linear + insn.size))
+    violations = [(off, name) for off, name in KNOWN_DATA.items()
+                  if off in reached and off not in EXPECTED_DATA_HITS]
+    if violations:
+        print(f"WARNING: {len(violations)} known data regions were disassembled "
+              f"as code - the extra coverage is not real")
+        for off, name in sorted(violations):
+            print(f"  {off:#06x}  {name}")
+    else:
+        print(f"data check: all {len(KNOWN_DATA) - len(EXPECTED_DATA_HITS)} "
+              f"known data regions left alone")
     print()
 
     if d.interrupts:

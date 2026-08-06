@@ -79,8 +79,9 @@ Because this dispatcher leads out of `X.EXE`, it cannot be resolved from here.
 ## Resolved indirect jumps
 
 Every target is documented in [`re/seeds.txt`](../re/seeds.txt) and read by
-`disasm.py` automatically. Coverage went from **8.2 % to 40.6 %**, 2,601 to
-11,297 instructions, 102 to 340 call targets.
+`disasm.py` automatically. Together with the techniques described under
+"Widening the sweep" below, coverage went from **8.2 % to 44.6 %**, 2,601 to
+12,536 instructions, 102 to 346 call targets.
 
 | Site | Kind | Resolution |
 |---|---|---|
@@ -145,6 +146,65 @@ that index `[0x5BF0 + 2*char]`, effectively from `0x5CC0`, into a phrase pool.
 That is why an initial string search only turned up fragments like `SCENARI` or
 `FIRE AND FORGE` — the last letter carries bit 7.
 
+## Widening the sweep
+
+Two techniques beyond plain recursive descent, and one guard that keeps them
+honest.
+
+### Byte-scanned call targets (`--scan-calls N`)
+
+Recursive descent only finds a routine once something reaches it, so a function
+whose only callers sit in unreached code stays invisible even though its call
+sites are plainly there in the bytes. Scanning the image for the `call rel16`
+encoding breaks that circle. Each candidate is probed first: ten instructions
+have to decode from it without a failure and without an opcode real program
+text does not contain.
+
+`N` is how many call sites a target needs before it is trusted. **The default
+is 2.**
+
+### Function pointers in registers
+
+Eleven `call bp` sites survive the descent because `bp` is loaded in a
+different basic block than the call. The inference that works runs the other
+way: if the program loads a constant into `bp` anywhere and elsewhere does
+`call bp`, that constant is a function entry.
+
+Only `bp` qualifies. That restriction is measured, not assumed — see below.
+
+### The data-region guard
+
+Ten regions are proven to be data by other parts of the analysis: the palette
+at `0xFC00`, the segment table at `0xFC16`, both archive indices, the token
+pool, the base names and so on. `disasm.py` checks after every run that it has
+not disassembled any of them, and says so:
+
+```
+data check: all 9 known data regions left alone
+```
+
+This guard is the whole reason the settings above are what they are. Without
+it, the numbers look far better and mean nothing:
+
+| Setting | Coverage | Data regions wrongly decoded |
+|---|---:|---:|
+| plain descent | 40.6 % | 0 |
+| `--scan-calls 1` | **66.2 %** | **6** |
+| `--scan-calls 2` | 44.6 % | 0 |
+| register pointers, `bp` only | +1.2 pt | 0 |
+| register pointers, `bp` + `bx` | +6.7 pt | 4 |
+| register pointers, plus `di` | +12.5 pt | 6 |
+
+`--scan-calls 1` reaches two thirds of the image, and six of the ten regions it
+"reaches" are things whose contents are already fully understood as data. The
+gain is manufactured.
+
+Admitting `bx` and `di` as function-pointer registers fails for a specific
+reason worth remembering: they hold data pointers in most contexts, so
+`mov si, 0xFC00` — the palette — would be seeded as code merely because
+`jmp si` occurs somewhere. And that `jmp si` is the inline-string return, not a
+function pointer at all.
+
 ## Operating system interface
 
 Remarkably narrow; the game drives almost everything straight at the hardware.
@@ -189,7 +249,7 @@ Remaining indirect jumps, by leverage:
 | Site(s) | Kind | Why still open |
 |---|---|---|
 | 35x `lcall [0xFC14]` | overlay | leads out of `X.EXE`; needs the overlay's own dispatch table |
-| 11x `call bp` | dynamic | `bp` is set across basic blocks, simple constant propagation is not enough |
+| `call bp` | dynamic | largely resolved by the register-pointer pass; the residue is `bp` values computed rather than loaded as constants |
 | 2x `jmp si` (`0x5B60`, `0x5B66`) | inline string | no fixed target — returns past the respective string. Handled correctly already, just not resolvable as a "target" |
 | 2x `call di` (`0x3393`, `0x33B3`) | dynamic | not analysed |
 | `call bx` (`0x9849`), `jmp bx` (`0x9E48`) | dynamic | not analysed |
@@ -201,6 +261,9 @@ Other:
   `0xBBA9` between `nop nop` and `sar ax,1`.
 - Check `lcall 0x14E8:0x1E2A` at `0xA973` — probably misread data, the segment
   matches no table entry.
-- The windowed analysis estimates ~50,976 bytes of code. 27,629 bytes are
-  reached, of which 1,647 are inline strings, so **~26,000 bytes of code, about
-  51 % of the estimate**.
+- The windowed analysis estimates ~50,976 bytes of code. 30,395 bytes are
+  reached, of which 1,647 are inline strings, so **~28,750 bytes of code, about
+  56 % of the estimate**.
+- The remaining ~22,000 bytes of estimated code are most likely reached only
+  through the overlay interface or through the struct-relative dispatchers, so
+  further progress there depends on the same two things everything else does.
