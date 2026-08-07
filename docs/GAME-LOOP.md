@@ -112,108 +112,12 @@ anything until it turned out to *be* the consumer.
 ## The flight model
 
 `0x4EB6` is the aircraft update, called from the loop when a self-modified flag
-is set, and it dispatches into `0x5000`-`0x5500`.
+is set, and it dispatches into `0x5000`-`0x5500`. It has its own document:
+[FLIGHT-MODEL.md](FLIGHT-MODEL.md) — units, the speed equation, the turn-rate
+table, ground handling, the throttle and the control axes.
 
-### Speed limits on two devices
-
-The routine opens by escalating two independent three-bit fields packed into
-`[0xFF7E]`, one per byte:
-
-```
-4EB6  mov  cx,[0xAE68]        ; airspeed
-4EBA  mov  ax,[0xFF7E]
-4EBD  and  ax, 0x303          ; two 2-bit fields
-4EC0  test al, 2
-4EC4  cmp  cx, 0x820          ; 260 kt -> or al,4
-4ECC  cmp  cx, 0xB68          ; 365 kt -> mov al,7
-4ED4  test ah, 2
-4ED9  cmp  cx, 0x790          ; 242 kt -> or ah,4
-4EE2  cmp  cx, 0xA28          ; 325 kt -> mov ah,7
-4EEA  mov  [0xFF7E], ax
-```
-
-Each field starts at 2 when the device is deployed and escalates to 6 and then
-7 as speed passes its two limits. Two devices with *different* limits — 260 and
-365 against 242 and 325 — which is what undercarriage and flaps look like, with
-the escalation being overspeed damage.
-
-### The time step
-
-```
-4EED  mov  al,[0x347C]
-4EF0  cwde
-4EF1  mov  cx, ax             ; cx = delta
-4EF3  shl  ax,1 / shl ax,1    ; ax = delta * 4
-```
-
-`cx` and `ax` carry the time step through the rest of the routine.
-
-### Airborne test
-
-```
-4F22  cmp  word [0x5115], 0x14    ; altitude above 20 units, 80 ft
-4F2E  cmp  word [0xAE68], 0x80    ; speed at or above 128, 16 kt
-4F36  or   byte [0xFF7D], 2
-```
-
-`[0x5115]` is the altitude in positive form; the init at `0x4E97` writes 3000
-there and `-3000` to `[0x3984]`, so the two are negatives of each other.
-
-### Control axes centre themselves
-
-```
-4F49  mov  di, cx              ; delta
-4F4B  shl  di,1  (five times)  ; di = delta * 32
-4F55  mov  ax,[0x5084]
-4F58  mov  bx, ax              ;   keep the sign
-4F5C  jns  .positive
-4F5E  neg  ax                  ; take the magnitude
-.positive
-4F60  sub  ax, di              ;   reduce by 32 * delta
-4F62  jae  .ok
-4F64  sub  ax, ax              ;   clamp at zero
-.ok
-4F68  jns  .done
-4F6A  neg  ax                  ;   put the sign back
-.done
-4F6C  mov  [0x5084], ax
-```
-
-Reduce the magnitude toward zero at a fixed rate, clamp, restore the sign —
-**a control axis returning to neutral when the stick is released**. The same
-block then repeats for `[0x4FCC]`, so there are two such axes.
-
-This shape recurs: the airspeed at `0x51F7` is the same idea with a non-zero
-target and a rate of six instead of thirty-two.
-
-The clearest piece decoded so far, at `0x51F7`:
-
-```
-51F7  mov  dx, 0            ; target value, patched at run time
-51FA  cmp  ax, dx
-51FC  jle  .done
-51FE  mov  cl,[0x347C]      ; frame delta
-5202  sub  ch, ch
-5204  shl  cx, 1
-5206  sub  ax, cx           ; three times 2*delta
-5208  sub  ax, cx
-520A  sub  ax, cx
-520C  cmp  ax, dx
-520E  jge  .store
-5210  xchg dx, ax           ; do not overshoot the target
-.store
-5211  mov  [0xAE68], ax
-```
-
-A **rate-limited approach to a target**: the value at `[0xAE68]` moves toward
-`dx` at six units per frame delta, clamped so it cannot pass it. That is how
-thrust, airspeed or a control surface settles, and the same shape will recur
-throughout the model.
-
-`0x4EB6` then reads `[0xAE68]` back and compares it against thresholds — `0x790`
-(1936), `0x820` (2080), `0xB68` (2920) — combined with flag bits out of
-`[0xFF7E]`, producing a small integer. Discrete bands over a continuous value:
-gear and flap limits, or afterburner stages.
+What stays here is how each piece of state was *identified*, since that is a
+story about reading the binary rather than about flying.
 
 ### `[0xAE68]` is the airspeed
 
@@ -452,6 +356,10 @@ coordinates are arbitrary and get scaled at instancing time.
 | `[0xFF7E]` | two 3-bit device states, escalated by overspeed | `0x4EB6`, limits 260/365 and 242/325 kt |
 | `[0x5115]` | altitude, positive form; `-[0x3984]` | init at `0x4E97`, airborne test at `0x4F22` |
 | `[0x5084]`, `[0x4FCC]` | two control axes, self-centring at 32 per delta | `0x4F49` onward; both instruction immediates |
+| `[0xAB64]` | **bank angle**, signed, buckets of ten degrees | indexes the turn-rate table at `0x52FF`, divides thrust at `0x528A` |
+| `[0xB43A]` | **throttle**, 0..500 with idle at 135 | integrated and clamped at `0x9E6B`, used at `0x5280` |
+| `[0x5119]` | unknown, `0x8000` at start | the immediate of `mov ax,imm` at `0x5118`; init `0x4E89`, read `0x50AD` |
+| `[0xAF81]` bit 3 | cleared each turn-rate update | `0x52FF` |
 | `[0xFF7D]` bit 1 | airborne | set at `0x4F36` above 80 ft and 16 kt |
 | `[0xFB3A]` | flag byte, bit 3 gates `0xB1B8` | |
 

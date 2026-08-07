@@ -54,6 +54,7 @@ FUNCTION_POINTER_REGS = {"bp"}
 KNOWN_DATA = {
     0x2E8F: "keyboard tables",
     0x30A3: "copy-protection text",
+    0x54D5: "turn-rate table, 8 x 9",
     0x5BF0: "token phrase pool",
     0x5CC0: "token table",
     0x734A: "base names",
