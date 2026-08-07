@@ -765,15 +765,50 @@ a budget that is spent down each time this is called, with the scan only
 running while it stays positive. The scan loop itself (`0x9848` onward) walks
 a structure via `es:[di+0x22]`, looks entries up in a table at `[si+0x2EB6]`,
 and calls the accumulator once per item, continuing while a running total
-(swapped through `[bp+0x2E]`) stays non-negative.
+(swapped through `[bp+0x2E]`) stays non-negative. This inner per-item lookup —
+resolving a reference through `[si+0x2EB6]` and conditionally rewriting the
+item's own `[bp+0x12]` (a Y-high world-coordinate field) from what it finds —
+is not fully worked out; what's certain below does not depend on it.
 
-At the end (`0x98A9` onward), once the budget or the scan is exhausted,
-`sub_0000_98E9` checks whether the scan reached its end (`cmp si,di`) and, if
-not, calls `sub_0000_98F2` (not traced) before setting the departure marker CF.
-On success, the same `si=0x2E66 / [si+2]=0 / call 0x314E` sequence closes it
-out — this scan's results are handed to the same list-to-BST pipeline `0x314E`
-serves elsewhere, sorted into the same position-keyed tree as everything else
-that pipeline touches.
+**At the end, the item gets filed into one of two lists — and the tables that
+land in turn are exactly what `0x993E`'s script tests.** `sub_0000_98E9` tries
+to unlink the current item (`bp`) from a list headed by `di`
+(`sub_0000_3130` — walk from the head comparing each node's own "next" field
+against `bp`, splice `bp`'s next in when found: an ordinary singly-linked-list
+unlink), first trying `[0x2E62]`, then `[0x2E66]`:
+
+```
+98DA  mov  ax, [bp+0x30]        ; the item's type/ID field
+      sub  ax, 0x52
+      cmp  ax, 1
+      jbe  .special               ; type 0x52 or 0x53: a distinct, untraced path
+      mov  di, 0x2E62               ; else: try the first list
+
+sub_0000_98F2:
+      mov  bx, [bp+0x30]              ; the same type field
+      cmp  bx, 0x97
+      jae  .unlink                      ; type >= 0x97: skip the counters below
+      inc  byte [bx+0x2F8A]               ; per-type counter, incremented
+      dec  byte [bx+0x3021]                 ; per-type counter, decremented
+.unlink (9903)
+      ... sub_0000_3130 against di, then against 0x2E66 if that misses ...
+```
+
+`0x2F8A` and `0x3021` are the *exact same two tables* `0x993E`'s script
+opcodes read — `0x00`-`0x7D` tests `[bx+0x2F8A]` against a threshold, `0xFE`
+tests `[bx+0x3021]` for zero. So the connection is direct, not inferred: this
+scan increments a per-type "reached" counter and counts a per-type "remaining"
+tally down, one per item processed, and the mission script tests those same
+counters to decide whether to let the flight plan continue. A count-based
+objective — destroy or reach at least N of type T, or all of type T — feeding
+a script the waypoint system depends on.
+
+Once unlinked, the item is filed into `[0x2E66]` proper — the same
+`si=0x2E66 / [si+2]=0 / call 0x314E` sequence closes it out, handing it to the
+list-to-BST pipeline `0x314E`/`0x3160` serves elsewhere, sorted into the same
+position-keyed tree as everything else that pipeline touches. Read together:
+`[0x2E62]` and `[0x2E66]` are two states of the same set of tracked objects —
+this is what moves an item from one to the other, counting the move.
 
 ### `0x3644`: a pooled, timestamped position marker that steals a reference
 
@@ -1094,10 +1129,15 @@ waypoint system's progression depends on it succeeding.
 
 ### Open
 
-The tables the script's opcodes index (`0x2F8A`, `0x3021`, the per-theatre
-scripts at `0x9C84`) are game data and stay out of this repository. What
-`[0x2E62]`/`[0x2E66]` (the two object lists `0x9986` searches) and
-`[0xF26E]`/`[0xFB33]` specifically are has not been traced further.
+`0x9986` itself is a leaf — no calls in its body, just the list walk. Chasing
+what populates the two lists it searches paid off: `[0x2E62]`/`[0x2E66]` are
+two states of one tracked-object set, and `0x2F8A`/`0x3021` are per-type
+counters both the mission script and the `0x9811` scan (see its own section
+above) touch — see there for the full connection. What remains open: the
+*values* the counters and per-theatre scripts hold are game data and stay out
+of this repository; `[0xF26E]`/`[0xFB33]` (the flags gating two of `0x993E`'s
+four call sites) and the type-0x52/0x53 special case at `0x98D3` are not
+traced further.
 
 ## Hot variables live inside instructions
 
