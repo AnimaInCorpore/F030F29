@@ -41,6 +41,7 @@ far is written up in `docs/`:
 |---|---|
 | [ENGINE.md](docs/ENGINE.md) | what is in `src/`, how to build it and how to check it |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the port divides work between the 68030 and the DSP |
+| [X86DISASSEMBLE.md](docs/X86DISASSEMBLE.md) | how to go about disassembling a DOS binary, from what this one cost |
 | [RE-NOTES.md](docs/RE-NOTES.md) | `X.EXE` memory layout, resolved indirect dispatchers, inline-string idiom |
 | [ARCHIVE-FORMAT.md](docs/ARCHIVE-FORMAT.md) | container format of `RETAL.00` / `RETAL.01` |
 | [RESOURCE-FORMATS.md](docs/RESOURCE-FORMATS.md) | RLE compression and the seven resource type handlers |
