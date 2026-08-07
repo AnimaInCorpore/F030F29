@@ -849,6 +849,159 @@ instead of a pointer that is about to dangle." What specifically triggers this
 (what caller sits at `0xCD7C` inside `0xCC8C`, and which subsystem holds the
 `+0x58` reference) has not been traced.
 
+## `0xCFDE`: waypoint navigation
+
+Found sitting in the same neighbourhood as the `0xCF00` record codec, but
+called from neither `0xCC8C` nor the flight model — from a reset path at
+`0xC7BF` and from the main loop directly at `0xF129`. Reading it and its two
+callees end to end gives a complete, self-contained flight-plan system.
+
+### The iterator
+
+```
+CFDE  mov  bx, 0          ; <- [0xCFDF], the current waypoint index (x4-ish)
+      mov  al, 0            ; <- [0xCFE2], the same index again
+      add  al, bl
+      shl  bl, 1 (twice)
+      add  bl, al
+      mov  bl, [bx - 0x2EBE]   ; a small lookup, index -> table row
+      ...                        ; bx*7 - 0x2F5F: a 7-byte-stride table
+      mov  di, 0x9C7E
+      movsw es:[di], [si]         ; word 1: position, copied as-is
+      lodsw / mov bl,ah / xor ah,0x80 / stosw   ; word 2: sign bit flipped
+      lodsw / mov bh,ah / xor ah,0x80 / stosw     ; word 3: sign bit flipped
+      mov  ax, bx
+      call 0xABB1                                   ; -> grid label, see below
+      mov  [0xB299], ax
+      lodsb                                            ; count of name records
+      mov  si, 0xD02B                                    ; the name table's base
+      call 0x5CEE                                          ; -> skip the name, see below
+      mov  di, 0xB29D
+      mov  cx, 7
+      rep  movsw es:[di], [si]                               ; 7 more words, after the name
+      inc  byte [0xCFE2]                                       ; advance to the next waypoint
+```
+
+A self-modified cursor (`[0xCFE2]`, incremented on every call — the same
+in-place-immediate pattern as everywhere else in this codebase) walks a table
+of 7-byte index records, each pointing into a waypoint database: a 3D
+position, a variable-length name, and 7 trailing words of per-waypoint data.
+The main-loop call site caps the cursor:
+
+```
+F11B  cmp  byte [0xF3A2], 0x62   ; the theatre, tested exactly as at 0xCC8C's
+      jbe  .skip                    ;   own entry
+F122  cmp  byte [0xCFE2], 5          ; the cursor, capped at 5
+      jae  .skip
+F129  call 0xCFDE                      ; advance to the next waypoint
+```
+
+**Five waypoints per flight plan** (indices 0-4), and the game world position
+words get their high bit flipped on the way in — the on-disk/table format
+stores them excess-128 (unsigned, zero at the middle of the range) and this
+converts to the signed representation used everywhere else, one XOR per word.
+
+### `0xABB1`: an alphanumeric grid reference
+
+```
+ABB1  mov  cl, 3
+      rol  ax, cl        ; rotate both bytes left 3
+      and  ax, 0x0707      ; keep the top 3 bits of each, now in the low nibble
+      add  ax, 0x4131        ; 'A' + '1' — ASCII base
+```
+
+Takes the two sign-flipped coordinate bytes from the load above and turns the
+top 3 bits of each into a letter and a digit — an 8x8 alphanumeric grid
+reference, chess-coordinate style ("A1" through "H8"). Stored at `[0xB299]`
+as a two-character word, presumably for a nav display alongside the waypoint
+name.
+
+### `0x5CEE`: skip N terminated records
+
+```
+5CEE  mov  cl, al          ; al = how many records to skip
+      jcxz .done
+.next
+      lodsb
+      shl  al, 1              ; bit 7 into the carry
+      jae  .next                ; bit 7 was clear: still inside this record
+      loop .next                  ; bit 7 was set: one record done, count down
+.done
+      ret
+```
+
+The same high-bit-terminator convention documented for the inline-string
+routines in [X86DISASSEMBLE.md](X86DISASSEMBLE.md), generalised to skip a
+run of `al` consecutive terminated records rather than exactly one. Called
+with `si = 0xD02B` (a fixed base — the waypoint name table) and `al` = a
+count read from the waypoint's own index record, it walks past that many
+names and leaves `si` pointing at whatever comes after — which is exactly
+where `0xCFDE`'s final `rep movsw` picks up. The waypoint's name itself is
+never copied anywhere; only skipped over to reach the fixed data that follows
+it in the same record.
+
+### `0xD18D`: arrival and proximity
+
+```
+D18D  mov  ax, [0x977E]       ; a second tracked position (not the aircraft's
+      mov  [bp+0x16], ax         ;   own — see FLIGHT-MODEL.md for that one)
+      ...
+      cmp  word [0x2E76], 0        ; a waypoint-list pointer/existence flag
+      je   .none                     ;   none: bail out to a fallback path
+      mov  al, 0                       ; <- self-modified: gates whether to check at all
+      shr  al, 1
+      jae  .accumulate
+      mov  ax, [0x9C80]                  ; the waypoint's position (loaded above)
+      sub  ax, ss:[di+0xE]
+      jne  .close
+      mov  ax, [0x9C82]
+      sub  ax, ss:[di+0x16]
+      jne  .close
+      xchg cl, ch                          ; exact match
+.close
+      mov  al, 0x18                          ; effect 24
+      add  al, cl                              ;   +1 = 25 on an exact match
+      call 0x4188                                ; the sound gate, see FLIGHT-MODEL.md
+.accumulate
+      mov  ax, [0xD1E4]                            ; a running total
+      add  ax, cx
+      mov  [0xD1E4], ax
+      mov  [bp+0x12], ax                             ; also written into the caller
+```
+
+Compares the currently-loaded waypoint's position against a tracked point and
+sounds effect 24 for a near match, 25 for an exact one — an arrival chime and
+a proximity cue, gated by a self-modified flag that presumably turns the
+check on only when navigation is actually active.
+
+### The reset path
+
+`0xC7BF` — zero the running total, load waypoint 0, then call `0xD1DB`:
+
+```
+D1DB  mov  bx, 0x3030      ; ASCII "00"
+      mov  ax, 0             ; <- self-modified: one number to format
+      ...
+      aam  0xA                 ; decimal split
+      add  ax, bx                ; -> ASCII digit pair, stored at 0xB2BD
+      ...                          ; a second self-modified number, same
+                                     ; treatment, stored at 0xB2B6
+```
+
+A two-digit decimal-to-ASCII formatter, run once at reset — consistent with
+building a "waypoint N of M" display label alongside the position and grid
+reference. The no-waypoints branch (`[0x2E76] == 0`, at `0xD1FC`) does
+something else entirely — toggles `[0xF04F]`, writes `[bp+0x25]` and
+`[bp+0xE]` — not chased.
+
+### What's still open
+
+`[0x2E76]` (read directly inside `0xCC8C` at `0xCD30`/`0xCED8`, so this system
+is tied into the main state dispatch, not just standalone) and `[0x977E]`
+(the second tracked position `0xD18D` compares against) are both named but
+not fully traced back to what sets them. `[0xD1DF]`, cleared alongside
+`[0xD1E4]` at reset, and the no-waypoints fallback path are likewise open.
+
 ## Hot variables live inside instructions
 
 Before anything else in this region: **the program keeps its working state in
@@ -1144,6 +1297,9 @@ coordinates are arbitrary and get scaled at instancing time.
 - The rest of the aircraft state block. `[0x347B]` holding the frame delta as
   the high byte of a word means it is used as 8.8 fixed point, which is likely
   the format the whole model works in.
+- The waypoint system (`0xCFDE`): what `[0x2E76]` and `[0x977E]` are exactly,
+  and the no-waypoints fallback path at `0xD1FC`. See its own section above
+  for what is settled.
 - All eighteen of `0xCC8C`'s direct callees are now read, `0x9811` and
   `0x3644` included. What remains: what `0x9930`'s summed field (`es:[di+0x1E]`)
   represents; `sub_0000_98F2` (reached from `0x98E9`, not traced); which
