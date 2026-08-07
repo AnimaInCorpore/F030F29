@@ -279,9 +279,67 @@ So `0x0A72` answers part of what [DISPLAY-LIST.md](DISPLAY-LIST.md) left open
 — "this interpreter drives some other vector list: the HUD, the cockpit
 instruments, or the wireframe map" was written about `0x4777`, and whatever
 `0x4777` turns out to draw, it is not this. The cockpit panel has its own,
-separate vector language, hand-rolled rather than table-dispatched. `0x0B0D`'s
-own internals and `sub_0000_096E`'s full line-drawing body are not traced past
-confirming what they are.
+separate vector language, hand-rolled rather than table-dispatched.
+
+#### `0x0B0D` and `0x96E` in full: a Bresenham line drawer for one EGA/VGA bitplane
+
+`0x0B0D` itself has no more to it than the two calls already quoted — endpoint
+one, then endpoint two, both straight into `0x96E`. All the work is in `0x96E`,
+which is a complete, hand-optimised Bresenham line algorithm targeting a
+single bitplane of 320-pixel-wide EGA/VGA graphics memory, forty bytes per
+scanline (`bp=0x28`):
+
+```
+096E  sub  bx, si                 ; delta along one axis
+      jae  .ok
+      add  si, bx / neg bx           ; normalise: always step forward,
+      xchg di, cx                      ;   swapping both endpoint pairs if not
+.ok
+      mov  bp, 0x28                  ; 40 bytes/scanline (320 px / 8)
+      sub  cx, di                     ; delta along the other axis
+      ja   .go                         ; sign of the second delta decides
+      jb   .flip                        ;   octant / step direction
+      cmp  di, [0x54A] / jne .go / ret    ; one exact-boundary case: no-op
+.flip
+      dec di / neg bp / neg cx             ; step the other way
+.go
+      mov  ax, bx / mov bx, si               ; ax = primary delta, bx = start X
+      shl  di, 1
+      mov  di, [di - 0x728]                    ; scanline-stride table, indexed
+      add  di, si                                ;   by (doubled) Y - byte offset
+      shr  di, 1 (three times)                     ;   within the 40-byte row
+      mov  dx, 0x3CF                                 ; Graphics Controller Data port
+      inc  ax
+      cmp  cx, ax
+      jae  .steep                                      ; |dy| >= |dx|+1: steep line
+```
+
+Below the branch, the **shallow** path (`0x9C4` onward, `cx < ax`, more
+columns than rows) is the classic single-bitplane Bresenham pixel plotter:
+compute the step rate with one `div`, then per pixel build an AND/XOR bit
+mask, `out` it to the Graphics Controller's Data register (port `0x3CF`, with
+the Bit Mask index already latched by `0xC3BB`), and `xchg` with `es:[di]` —
+the standard EGA/VGA "read the latch, mask, write back" trick that modifies a
+single bit without disturbing its seven neighbours, advancing `di` by `bp`
+(one scanline) or by one byte depending on which axis is stepping. Several
+special cases are unrolled inline: a single-pixel-wide line, and the two
+sub-byte edge cases where the mask spans a byte boundary.
+
+The **steep** path (`0xA21` onward, `cx >= ax`, more rows than columns) has a
+different character entirely — no `out` to the Graphics Controller at all,
+just `inc byte ptr [di] / add di, bp` in a tight loop, incrementing a byte at
+each scanline's table slot rather than plotting a pixel directly. That is the
+shape of building a **per-scanline coverage count**, not drawing a line — more
+likely an edge table for a fill than a visible line for a steep segment. Left
+open: this reading is inferred from the code shape, not confirmed against a
+consumer of the resulting table.
+
+`[0x54A]`, the one early-exit special case, is read and written in eleven
+places well beyond this routine (`0x081B`, `0x607A`, `0x619A`, `0xA28D`,
+`0xA411`, `0xA432`, `0xA554`, `0xA576`, `0xA60F`, the write at `0xA739`) — a
+genuinely shared variable, not something local to line drawing. Chasing what
+it is generally is out of scope here; within `0x96E` it only gates one
+degenerate case.
 
 ### States 1 and 11: a mirrored pair of gauge clusters
 
@@ -1106,15 +1164,16 @@ coordinates are arbitrary and get scaled at instancing time.
 - The three other callers of `0x1F3A`'s rotation-matrix builder
   (`0x3AF5`, `0x3D9E`, `0xEE2C`), and the three other direct callers of
   `0x3160`'s tree insert (`0x3B37`, `0x45F7`, `0xCE87`).
-- All thirteen state handlers are now read at some depth, `0xAA45` and
-  `0x0A72` included. What remains within them: `0xAA93`/`0xAA9F`/`0x022E`
-  (the gauge's pixel-level draw, confirmed as a draw primitive and not
-  chased further), `0x0B0D`'s own internals and `sub_0000_096E`'s full
-  line-drawing body (confirmed as the cockpit panel's line renderer, not
-  worked out instruction by instruction), `0x6703` (the odd-`bp` branch of
-  the icon blitter `0x6680`), and the exact control flow of `0xAE0A`'s
-  blink-skip path (does `pop si; ret` at `0xAE08` correctly resume the
-  caller past its trailing label, or does that depend on the
+- All thirteen state handlers are now read at some depth, `0xAA45`, `0x0A72`,
+  `0x0B0D` and `0x96E` included. What remains within them: `0xAA93`/`0xAA9F`/
+  `0x022E` (the gauge's pixel-level draw, confirmed as a draw primitive and
+  not chased further), whether `0x96E`'s steep-line branch (`0xA21`) really
+  builds a per-scanline coverage table rather than drawing — inferred from
+  the code shape, no consumer of that table found yet, `[0x54A]`'s general
+  meaning (eleven read/write sites well beyond line drawing), `0x6703` (the
+  odd-`bp` branch of the icon blitter `0x6680`), and the exact control flow
+  of `0xAE0A`'s blink-skip path (does `pop si; ret` at `0xAE08` correctly
+  resume the caller past its trailing label, or does that depend on the
   `0x58B6`/`0x58CB` print chain from a prior frame — not traced).
 - What triggers a transition between the thirteen states — `[0xA720]` is
   written in several places not yet examined, so what makes the player cycle
