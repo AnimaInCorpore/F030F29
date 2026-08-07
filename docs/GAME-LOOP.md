@@ -157,8 +157,10 @@ Dividing by speed, with a floor so it cannot blow up at a standstill, is how a
 flight model scales control authority — the faster you go, the less angular
 change a given input buys per unit of distance.
 
-**It accelerates at a limited rate** toward a target, six units per frame delta,
-clamped against overshoot (`0x51F7`, quoted above).
+**It is updated every frame by `0x5260`**, which integrates thrust against
+drag directly into it — not a separate rate-limited approach to a target. A
+second, independent mechanism caps it against a g/altitude-dependent ceiling
+computed by `0x52FF`; see [FLIGHT-MODEL.md](FLIGHT-MODEL.md) for both.
 
 **It gates discrete bands** at `0x4EB6`, against 1936, 2080 and 2920 combined
 with flag bits.
@@ -201,9 +203,9 @@ AE74  ret
 ```
 
 `mov bx, 0` at `0xAE67` assembles as `bb 00 00`, so its immediate occupies
-`0xAE68` and `0xAE69`. The flight model's `mov [0xAE68], ax` at `0x5211` writes
-the speed straight into the instruction that will load it. The instrument
-routine then shifts right three and prints it.
+`0xAE68` and `0xAE69`. The flight model's `mov [0xAE68], dx` at `0x52FA` writes
+the speed straight into the instruction that will load it, every frame. The
+instrument routine then shifts right three and prints it.
 
 **So the display is `speed / 8`, and the internal unit is eight per knot.**
 Every constant falls into place:
@@ -353,7 +355,7 @@ coordinates are arbitrary and get scaled at instancing time.
 | `[0x6327]` | the timer's value last frame | |
 | `[0xA720]` | game state, 0..12 | indexes the table at `0xA6D7` |
 | `[0xF3A2]` | theatre | tested at `0xCC8C`, `0x438D`, `0x75FC` |
-| `[0xAE68]` | **airspeed**, eight per knot, 3200 = 400 kt at start | the immediate of `mov bx,imm` at `0xAE67`, written by the model at `0x5211`, displayed as `>> 3` |
+| `[0xAE68]` | **airspeed**, eight per knot, 3200 = 400 kt at start | the immediate of `mov bx,imm` at `0xAE67`, integrated by `0x5260` at `0x52FA`, capped at `0x5211`, displayed as `>> 3` |
 | `[0xA81E]` | **heading**, 2048 to the circle, starts at 1024 = due south | written each frame at `0x511E`, initialised at `0xEF06` |
 | `[0x3984]` | **vertical position**, four feet per unit, negative upward, ground at -20, starts at -3000 | the immediate of `mov [bp+0x12],imm` at `0x3981`; written at `0x4EA0` |
 | `[0x398E]` | the paired horizontal coordinate | the immediate at `0x398B`, read alongside `[0x3984]` |
@@ -367,7 +369,7 @@ coordinates are arbitrary and get scaled at instancing time.
 | `[0xAB64]` | **load factor**, tenths of g, 10 = 1 g, envelope -3..+9 g | target from `0x5416`, rate-limited at `0x5051`; divides thrust at `0x528A` |
 | `[0xB43A]` | **throttle**, 0..500 with idle at 135 | integrated and clamped at `0x9E6B`, used at `0x5280` |
 | `[0xAF81]` bit 3 | cleared by `0x52FF` and on ground contact at `0x513C` | |
-| `[0xFF7D]` bit 1 | airborne | set at `0x4F36` above 80 ft and 16 kt |
+| `[0xFF7D]` bit 1 | gated "flying" flag, sticky | updated at `0x4F29`/`0x4F36` only while `[0xFB32]` bit 7 and `[0xFF7C]` bit 1 hold; set above 80 ft and 16 kt |
 | `[0xFB3A]` | flag byte, bit 3 gates `0xB1B8` | |
 
 ## Open
