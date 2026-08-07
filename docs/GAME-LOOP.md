@@ -85,14 +85,18 @@ with it. Three routines found separately all key off the same byte.
 ## Hot variables live inside instructions
 
 Before anything else in this region: **the program keeps its working state in
-the immediate operands of the instructions that read it.** Four are confirmed:
+the immediate operands of the instructions that read it.** Eight are confirmed:
 
 | Address | Instruction that holds it | Quantity |
 |---|---|---|
 | `0xAE68` | `mov bx, imm` at `0xAE67` | airspeed |
 | `0x3984` | `mov word [bp+0x12], imm` at `0x3981` | vertical position |
-| `0x5084` | `mov ax, imm` at `0x5083` | control axis |
-| `0x4FCC` | `mov ax, imm` at `0x4FCB` | control axis |
+| `0x5084` | `mov ax, imm` at `0x5083` | pitch attitude |
+| `0x4FCC` | `mov ax, imm` at `0x4FCB` | bank angle |
+| `0x4FDB` | `mov ax, imm` at `0x4FDA` | pitch command |
+| `0x5119` | `mov ax, imm` at `0x5118` | heading accumulator |
+| `0x510F` | `add ax, imm` at `0x510E` | altitude fraction |
+| `0x5115` | `adc dx, imm` at `0x5113` | altitude |
 
 This is not obfuscation, it is an 8086 optimisation: `mov ax, imm` is
 appreciably faster than `mov ax, [mem]`, since the immediate is already in the
@@ -113,8 +117,8 @@ anything until it turned out to *be* the consumer.
 
 `0x4EB6` is the aircraft update, called from the loop when a self-modified flag
 is set, and it dispatches into `0x5000`-`0x5500`. It has its own document:
-[FLIGHT-MODEL.md](FLIGHT-MODEL.md) — units, the speed equation, the turn-rate
-table, ground handling, the throttle and the control axes.
+[FLIGHT-MODEL.md](FLIGHT-MODEL.md) — units, load factor, the speed equation,
+attitude and position integration, ground handling and the throttle.
 
 What stays here is how each piece of state was *identified*, since that is a
 story about reading the binary rather than about flying.
@@ -129,7 +133,7 @@ Established, from five independent uses across twenty accesses.
 5123  mov  ax,[0x347B]      ; the word whose high byte is the frame delta
 5126  imul word ptr [0xAE68]
 512A  mov  cx, dx           ; keep the high word of the product
-512C  mov  ax,[di+0x143A]   ; a direction component
+512C  mov  ax,[di+0x143A]   ; sin of the pitch angle
 5130  imul cx
 5132  add  ax, bp           ; accumulate into a 32-bit position
 5135  adc  dx, bp
@@ -355,11 +359,14 @@ coordinates are arbitrary and get scaled at instancing time.
 | `[0x398E]` | the paired horizontal coordinate | the immediate at `0x398B`, read alongside `[0x3984]` |
 | `[0xFF7E]` | two 3-bit device states, escalated by overspeed | `0x4EB6`, limits 260/365 and 242/325 kt |
 | `[0x5115]` | altitude, positive form; `-[0x3984]` | init at `0x4E97`, airborne test at `0x4F22` |
-| `[0x5084]`, `[0x4FCC]` | two control axes, self-centring at 32 per delta | `0x4F49` onward; both instruction immediates |
-| `[0xAB64]` | **bank angle**, signed, buckets of ten degrees | indexes the turn-rate table at `0x52FF`, divides thrust at `0x528A` |
+| `[0x5084]` | **pitch attitude**, 16-bit angle, decays to level | integrated at `0x5071`, ground-limited at `0x53CD`, `0x5565` -> `[0xA81B]` |
+| `[0x4FCC]` | **bank angle**, 16-bit angle, decays to level | `0x5565` -> `si` at `0x4FD1`, then `cos(si)` and `sec(si)` |
+| `[0x4FDB]` | **pitch command** | `mov ax,imm` at `0x4FDA`; drives pitch rate and load factor |
+| `[0x5119]` | **heading accumulator**, 16-bit angle | `0x50AD` onward, `0x5565` -> `[0xA81E]` |
+| `[0x510F]` | altitude fraction, low word of the 16.16 pair with `[0x5115]` | `mov [0x510F],ax` at `0x5154` |
+| `[0xAB64]` | **load factor**, tenths of g, 10 = 1 g, envelope -3..+9 g | target from `0x5416`, rate-limited at `0x5051`; divides thrust at `0x528A` |
 | `[0xB43A]` | **throttle**, 0..500 with idle at 135 | integrated and clamped at `0x9E6B`, used at `0x5280` |
-| `[0x5119]` | unknown, `0x8000` at start | the immediate of `mov ax,imm` at `0x5118`; init `0x4E89`, read `0x50AD` |
-| `[0xAF81]` bit 3 | cleared each turn-rate update | `0x52FF` |
+| `[0xAF81]` bit 3 | cleared by `0x52FF` and on ground contact at `0x513C` | |
 | `[0xFF7D]` bit 1 | airborne | set at `0x4F36` above 80 ft and 16 kt |
 | `[0xFB3A]` | flag byte, bit 3 gates `0xB1B8` | |
 

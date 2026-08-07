@@ -52,9 +52,11 @@ FUNCTION_POINTER_REGS = {"bp"}
 # of data and the extra coverage is worthless.  The keyboard tables at 0x2E8F
 # are reached even by the plain descent and are a known, pre-existing exception.
 KNOWN_DATA = {
+    0x143A: "sine table, 1024 words",
     0x2E8F: "keyboard tables",
     0x30A3: "copy-protection text",
-    0x54D5: "turn-rate table, 8 x 9",
+    0x5485: "manoeuvre envelope, 10 x 8",
+    0x54D5: "vertical-rate table, 8 x 9",
     0x5BF0: "token phrase pool",
     0x5CC0: "token table",
     0x734A: "base names",

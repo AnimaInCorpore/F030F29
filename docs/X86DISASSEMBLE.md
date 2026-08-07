@@ -143,8 +143,9 @@ has writers and readers but no plausible consumer, check whether its address
 lands inside an instruction.
 
 In this binary that turned out to be the *standard* way of holding working
-state, not an occasional trick — airspeed, altitude and both control axes are
-all stored in the immediate of the instruction that reads them. On an 8086
+state, not an occasional trick — airspeed, altitude, pitch, bank, heading and
+the pitch command are all stored in the immediate of the instruction that reads
+them. On an 8086
 `mov ax, imm` is appreciably faster than `mov ax, [mem]` because the immediate
 is already in the prefetch queue, so it is an optimisation rather than
 obfuscation. Once you have found one, assume there are more and check every hot

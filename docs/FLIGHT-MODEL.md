@@ -4,30 +4,32 @@
 flag is set, and it dispatches into `0x5000`-`0x5500`, a region that holds
 almost the whole model.
 
-What follows is what has been read so far: the units, the speed equation, the
-turn rate, the ground constraint and the throttle. The variable inventory is in
-[GAME-LOOP.md](GAME-LOOP.md); the reading techniques are in
-[X86DISASSEMBLE.md](X86DISASSEMBLE.md).
+The variable inventory is in [GAME-LOOP.md](GAME-LOOP.md); the reading
+techniques are in [X86DISASSEMBLE.md](X86DISASSEMBLE.md).
 
 ## Units and conventions
 
-Everything in the model is fixed point, and the scales were settled by finding
-the instrument routine that displays each quantity.
+Everything is fixed point, and the scales were settled by finding the instrument
+routine that displays each quantity.
 
 | Quantity | Address | Unit | Start |
 |---|---|---|---|
 | Airspeed | `[0xAE68]` | 8 per knot | 3200 = 400 kt |
-| Vertical position | `[0x3984]` | 4 ft, axis **down**, ground at -20 | -3000 = 11,920 ft |
-| Altitude, positive | `[0x5115]` | `-[0x3984]` | 3000 |
-| Heading | `[0xA81E]` | 2048 to the circle | 1024 = due south |
-| Bank | `[0xAB64]` | signed byte, see below | |
+| Altitude | `[0x510F]`/`[0x5115]` | 16.16, 4 ft per unit, ground at 20 | 3000 = 11,920 ft |
+| Altitude, negated | `[0x397F]`/`[0x3984]` | the same, axis down | -3000 |
+| Heading | `[0x5119]` → `[0xA81E]` | 16-bit angle → table offset | 1024 = due south |
+| Pitch | `[0x5084]` → `[0xA81B]` | likewise | |
+| Bank | `[0x4FCC]` | 16-bit angle | |
+| Pitch command | `[0x4FDB]` | | |
+| Load factor | `[0xAB64]` | signed byte, **10 = 1 g** | 10 |
 | Throttle | `[0xB43A]` | 0..500, idle at 135 | |
 | Frame delta | `[0x347C]` | ticks, clamped to 25 | |
 | | `[0x347B]` | the same as 8.8 fixed point | |
 
-World coordinates are 16.16 fixed point with the integer part in the high word.
+Every one of these except `[0xAB64]` and `[0xB43A]` is an instruction immediate,
+patched in place — see [GAME-LOOP.md](GAME-LOOP.md).
 
-### Angles: 16 bit internally, 11 bit for use
+### Angles: 16 bit internally, a byte offset for use
 
 `0x5565`, called from four places, is six instructions:
 
@@ -41,19 +43,183 @@ World coordinates are 16.16 fixed point with the integer part in the high word.
 ```
 
 Rotating left twice then swapping bytes is a rotate left by ten; the `shl` makes
-it eleven while dropping the top bit; the mask keeps eleven. The net effect is
-**`(ax >> 5) & 0x7FF`**.
+it eleven, and the mask keeps eleven bits. Because `shl` shifts a zero into
+bit 0, **the result is always even**:
 
-So the model carries angles as 16-bit fractions of a circle and converts to the
-11-bit form — 2048 to the circle — whenever one is stored or used as an index.
-Its results go to `[0xA81E]`, the heading, and `[0xA81B]`.
+```
+result = ((ax >> 6) & 0x3FF) * 2
+```
 
-For the port: compute in 16 bits, store and index in 11.
+That is a **10-bit angle, 1024 steps to the circle, pre-doubled into a byte
+offset** for the word tables below. The eleventh bit exists because the value is
+an offset, not because the angle has 2048 steps.
+
+### The trig table at `0x143A`
+
+`imul word ptr [si+0x163A]` and `imul word ptr [di+0x143A]` read the same table.
+Correlating the region against a sinusoid settles it outright:
+
+```
+0x143A words, 1024 entries:  max deviation from 32767*sin(2*pi*i/1024)  =  1
+0x163A words, 1024 entries:  max deviation from 32767*cos(2*pi*i/1024)  =  1
+```
+
+One 1024-entry signed 16-bit **sine** table at `0x143A`, with the **cosine** as
+the same table 512 bytes — a quarter circle — further on. The region spans
+`0x143A`-`0x1E39`, 2560 bytes, and nothing writes to it.
+
+The inverse is at `0x1401`: a seven-step binary search with a stride that halves
+from 64, then `and bl, 0xFE` to make the result a word offset again. `0x1427`
+and `0x1430` are its quadrant fixups, computing `0x1F3A - cx` and `0x203A - cx`
+masked with `and bh, 7` — reflections about 135 and 180 degrees.
+
+## Load factor
+
+`[0xAB64]` is the centre of the model. **The unit is tenths of g: 10 is 1 g.**
+Everything else hangs off it — induced drag, the vertical rate, and the
+manoeuvre envelope.
+
+### `0x5416` computes the target
+
+The routine takes the pitch command in `ax` and the envelope limit in `cl`, and
+returns the g the aircraft should be pulling:
+
+```
+5416  push cx
+5417  sar  ax, 1
+5419  cmp  ax, 0x2D00 / mov ax,0x2CFF    ; clamp to +-11519, so that
+5421  cmp  ax, 0xD300 / mov ax,0xD301    ;   the byte divide cannot overflow
+5429  mov  cl, 0x5A
+542B  idiv cl                            ; pitch command / 90
+542D  mov  bl, al
+542F  call 0x5450                        ; al = the g needed to hold the bank
+5432  pop  cx
+5433  cmp  cl, al
+5435  jge  .1
+5437  add  al, cl / shr al, 1            ;   over the limit: average with it
+.1
+543B  add  al, bl                        ; plus the commanded part
+543D  jo   .ovf
+543F  cmp  al, 0xE2 / jl  .lo            ; -30
+5443  cmp  al, 0x5A / jg  .hi            ; +90
+```
+
+`0x5450` is the piece that names the quantity:
+
+```
+5450  mov  cx,[si+0x163A]     ; cos(bank) * 32767
+5454  cmp  cx, 0xA    / jb .out
+5459  cmp  cx, 0xFFF6 / ja .out          ; reject |cos| near zero
+545E  mov  ax, 0xFFFF
+5461  mov  dx, 4
+5464  idiv cx                            ; 327679 / (32767 * cos)  =  10 * sec
+5466  abs
+546C  cmp  ax, 0x64 / jae .out           ; bail above 100, which is 10 g
+5471  mov  dl, al
+5473  mov  al, 0x14
+5475  imul ch                            ; 20 * high byte of the cosine
+5477  add  ax, 0x80
+547A  mov  al, 0xF6                      ; -10
+547C  add  al, dl
+547E  add  al, ah
+```
+
+`327679 / (32767 · cos φ)` is **`10 · sec φ`**, and `n = 1/cos φ` is the load
+factor in a level turn. The rest is `-10` and `+10 · cos φ`, so:
+
+```
+0x5450  =  10*n - 10 + 10*cos(bank)
+```
+
+**At wings level that is exactly 10.** The reject above 100 is a 10 g cut-off,
+and the reject at `|cos| < 10/32767` keeps `sec` from blowing up near 90 degrees
+of bank.
+
+So the answer to what `0x5416` returns is not an angle at all:
+
+```
+target = pitch_command/180 + 10*sec(bank) - 10 + 10*cos(bank)
+```
+
+soft-limited against the envelope in `cl`, and clamped to **-30 … +90, which is
+-3 g to +9 g**. That is a fighter's structural envelope, and the asymmetry is
+the giveaway — aircraft pull far harder than they push. The `/90` scaling the
+pitch command is not a degree conversion; it is what turns the command's range
+into tenths of g.
+
+Four independent facts agree on the unit:
+
+- wings level, no command, comes out at exactly **10**;
+- on the ground below 70 knots the target is forced to **10** (`0x504F`);
+- the induced-drag divisor in the speed equation floors at **10** (`0x529B`);
+- the vertical-rate table's buckets are ten wide with a dead zone of five, so
+  they straddle whole g.
+
+### It is rate limited into `[0xAB64]`
+
+```
+503A  mov  ax,[0x4FDB]           ; pitch command
+503D  call 0x5416                ; -> the target
+5040  cmp  word [0x5115], 0x14
+5045  jg   .1
+5047  cmp  word [0xAE68], 0x230  ; on the ground below 70 kt
+504D  jae  .1
+504F  mov  al, 0x0A              ;   pinned at 1 g
+.1
+5051  mov  ah, al
+5053  sub  ah,[0xAB64]           ; difference from the current value
+5057  jns  .2
+5059  neg  ah
+.2
+505B  sub  ah,[0x347C]           ; minus one frame delta
+505F  jbe  .3                    ;   within reach: snap
+5061  cmp  al,[0xAB64]
+5065  js   .4
+5067  neg  ah
+.4
+5069  add  al, ah                ; else move by the delta
+.3
+506B  mov  [0xAB64], al
+```
+
+One tenth of a g per frame delta tick. Pinning it to 1 g on the runway is the
+weight sitting on the undercarriage.
+
+### The manoeuvre envelope at `0x5485`
+
+`cl` comes from a table looked up just before the call:
+
+```
+501A  mov  al,[0x5116]      ; altitude >> 8
+501D  and  al, 0x38         ;   bits 3..5
+501F  mov  ah, al
+5021  shr  ah,1 / shr ah,1
+5025  add  ah, al           ; ah = 1.25 * al, so a row stride of 10
+5027  mov  al,[0xAE69]      ; airspeed >> 8
+502A  shr  al, 1            ;   >> 9
+502C  mov  cl, 0x0F
+502E  cmp  al, 0x0A
+5030  jae  .out             ; above 640 kt the limit is a flat 1.5 g
+5032  add  al, ah
+5034  mov  bx, 0x5485
+5037  xlatb
+5038  mov  cl, al
+```
+
+Eight rows of ten, indexed by altitude in 8,192 ft steps and airspeed in 64 kt
+steps — **80 bytes, filling `0x5485`-`0x54D4` exactly**, with the vertical-rate
+table starting immediately after. The index arithmetic can produce 79 and no
+more, which is the kind of exact fit that settles a table's extent.
+
+Its shape is a manoeuvre chart: it climbs with speed to a peak of 8.3 g at
+around 256 knots at sea level, falls away at both ends, and decays monotonically
+with altitude to the 1.5 g floor. The limit is *soft* — exceeding it averages
+the demand with the limit rather than truncating, so the aircraft mushes instead
+of hitting a wall.
 
 ## Airspeed
 
-Two routines run back to back. `0x5260` computes the speed the aircraft *wants*
-to be doing; `0x51F7` moves it there at a limited rate.
+`0x5260` computes the speed the aircraft wants; `0x51F7` walks it there.
 
 ### The target: thrust against drag
 
@@ -76,20 +242,20 @@ to be doing; `0x51F7` moves it there at a limited rate.
 5286  jae  .1
 5288  sub  ax, ax                  ;   clamped at zero
 .1
-528A  mov  cl,[0xAB64]             ; bank
+528A  mov  cl,[0xAB64]             ; load factor
 528E  or   cl, cl
 5290  jns  .2
 5292  neg  cl                      ;   magnitude
 .2
 5296  cmp  cl, 0xA
 5299  jae  .3
-529B  mov  cl, 0xA                 ;   floored at 10
+529B  mov  cl, 0xA                 ;   floored at 1 g
 .3
 529D  shl  ax,1 (three times)      ; thrust * 8
 52A3  cdq
-52A4  idiv cx                      ;   / max(|bank|, 10)
+52A4  idiv cx                      ;   / max(|n|, 1 g)
 52A6  xchg dx, ax                  ; dx = the quotient
-52A7  mov  al,[di+0x143B]          ; a per-entity constant
+52A7  mov  al,[di+0x143B]          ; sin of the pitch angle, high byte
 52AB  cwde
 52AC  shl  ax, 1
 52AE  sub  dx, ax                  ;   minus twice it
@@ -102,17 +268,15 @@ Written out:
 
 ```
 drag   = (63 - altitude>>8) + high_byte(6 * kink(speed)/2)
-target = 8*(throttle - 135) / max(|bank|, 10) - 2*[di+0x143B] - 1.25*drag
+target = 8*(throttle - 135) / max(|n|, 10) - 2*sin(pitch) - 1.25*drag
 ```
-
-Four things fall out.
 
 **Thrust is throttle above an idle offset of 135**, clamped so that closing the
 throttle below idle gives zero rather than negative thrust.
 
-**Banking costs speed.** Dividing thrust by the bank magnitude is induced drag
-in the turn, done in one instruction. The floor of 10 means level flight gets
-the full value and nothing divides by zero.
+**Pulling g costs speed.** Dividing thrust by the load factor is induced drag,
+done in one instruction, and the floor at 1 g means level flight gets the full
+value.
 
 **Drag is linear in speed, with a break at 580 knots.** Above 4640 the speed is
 bumped by 80 before the multiply, so the curve steepens — transonic drag rise,
@@ -121,6 +285,9 @@ one compare and one add.
 **Thrust falls with altitude.** `[0x5116]` is the high byte of `[0x5115]`, so
 the constant term is `63 - (altitude >> 8)`: 63 at sea level, 52 at the
 3000-unit start. Air density, at the cost of one byte read.
+
+**Climbing costs speed** through the `-2*sin(pitch)` term, which is gravity
+along the flight path.
 
 ### The rate limiter
 
@@ -142,7 +309,7 @@ the constant term is `63 - (altitude >> 8)`: 63 at sea level, 52 at the
 ```
 
 Six units per frame delta, clamped against overshoot. This shape recurs
-throughout the model: reduce toward a target at a fixed rate, never past it.
+throughout the model.
 
 ### The throttle
 
@@ -159,40 +326,112 @@ throughout the model: reduce toward a target at a fixed rate, never past it.
 9E7B  mov  [0xB43A], ax
 ```
 
-Accumulate a delta, clamp to 0..500. With idle at 135 the usable range is 135
-to 500 forward and 0 to 135 as a retarding region — an airbrake or reverse, or
-simply below-idle drag.
+Accumulate a delta, clamp to 0..500, with idle at 135.
 
-## Turn rate
+## Attitude and position
 
-`0x52FF` produces the rate at which the heading changes. Its result is scaled by
-the frame delta at `0x50FD` and integrated into `[0xA81E]` through the angle
-converter.
+The order of operations in `0x4FCB`-`0x51A0` is the whole integration.
+
+**Pitch rate** is the commanded pull resolved out of the bank and scaled by
+speed:
 
 ```
-52FF  and  byte [0xAF81], 0xF7    ; clear a flag bit
-5304  mov  al,[0xAB64]            ; bank
-5307  or   al, al
-5309  jns  .1
-530B  neg  al                     ;   magnitude
-.1
+4FCB  mov  ax, 0            ; <- [0x4FCC], the bank angle
+4FCE  call 0x5565
+4FD1  mov  si, ax           ; si = the bank's table offset
+4FDA  mov  ax, 0            ; <- [0x4FDB], the pitch command
+4FEA  imul word ptr [si+0x163A]        ; * cos(bank)
+4FEE  clamp dx to +-0x1000
+5002  sar  dx,1 / rcr ax,1
+5006  mov  cx,[0xAE68]
+500A  cmp  cx, 0x7D0 / mov cx, 0x7D0   ; floored at 250 kt
+5013  shl  cx,1 / shl cx,1
+5017  idiv cx                          ; / (4 * speed)
+5019  xchg di, ax
+```
+
+`cos(bank)` is the share of the pull that raises the nose; the `sin(bank)` share
+goes to the heading at `0x50CD`. Dividing by speed with a floor is the standard
+way to scale control authority so it cannot blow up at a standstill.
+
+That rate is integrated into the pitch attitude at `0x5071`, constrained by
+`0x53CD`, and converted to a table offset:
+
+```
+5071  mov  ax, di
+5073  imul word ptr [0x347B]
+5077  shl/rcl three times              ; * 8
+5083  mov  ax, 0                       ; <- [0x5084], the pitch attitude
+5086  add  ax, dx
+5098  call 0x53CD                      ;   ground constraint
+509B  call 0x5565
+509E  mov  [0xA81B], ax
+```
+
+**Heading** accumulates the bank, weighted by `cos(pitch)` so that pointing
+straight up stops the turn, plus the `sin(bank)` share of the pull:
+
+```
+50AD  mov  cx,[0x5119]                 ; the heading accumulator
+50B1  imul word ptr [di+0x163A]        ; bank * cos(pitch)
+50B5  sar  dx,1 (five times)
+50BF  add  cx, dx
+50C8  mov  ax,[0x4FDB]
+50CD  imul word ptr [si+0x143A]        ; pitch command * sin(bank)
+50F7  xchg cx, ax / add ax, dx
+50FA  mov  [0x5119], ax
+511B  call 0x5565
+511E  mov  [0xA81E], ax
+```
+
+**Position** is then the usual resolution of speed through pitch and heading,
+into 16.16 accumulators:
+
+```
+5123  mov  ax,[0x347B]
+5126  imul word ptr [0xAE68]           ; speed * delta
+512A  mov  cx, dx
+512C  mov  ax,[di+0x143A]              ; sin(pitch)
+5130  imul cx                          ;   -> vertical
+5132  add  ax, bp / adc dx, bp
+5137  cmp  dx, 0x14 / clamp to 20      ;   ground contact
+5146  cmp  dh, 0x40 / clamp to 0x3FFF  ;   ceiling
+5154  mov  [0x510F], ax
+5157  mov  [0x5115], dx
+515B  not dx / neg ax / sbb dx,-1      ; negate, 32 bit
+5162  mov  [0x397F], ax
+5165  xchg [0x3984], dx
+516C  mov  ax,[di+0x163A]              ; cos(pitch) -> the horizontal share
+5178  mov  ax,[bx+0x143A] / neg ax     ;   * -sin(heading) -> X
+5180  add  [0x3975], ax
+5196  mov  ax,[bx+0x163A]              ;   * cos(heading) -> Z
+519C  add  [0x3989], ax
+```
+
+Ground contact clamps the altitude to 20 and clears bit 3 of `[0xAF81]`, which
+is the same bit `0x52FF` clears each frame.
+
+## The vertical-rate table at `0x54D5`
+
+`0x52FF` produces a term that is added to the **altitude**, not to the heading:
+
+```
+52FF  and  byte [0xAF81], 0xF7    ; clear the flag bit
+5304  mov  al,[0xAB64]            ; load factor
+5307  abs
 530D  sub  al, 5
 530F  jae  .2
-5311  sub  al, al                 ;   dead zone of 5
+5311  sub  al, al                 ;   dead zone of half a g
 .2
 5313  aam  0x0A                   ; ah = al/10, al = al%10
 5315  mov  al, 7
-5317  cmp  ah, al
-5319  jg   .3
-531B  mov  al, ah                 ; column = min(|bank|-5)/10, 7)
+5317  cmp  ah, al / jg .3
+531B  mov  al, ah                 ; column = min((|n|-5)/10, 7)
 .3
 531D  sub  bh, bh
-531F  mov  bl,[0x5116]            ; altitude high byte
+531F  mov  bl,[0x5116]            ; altitude >> 8
 5323  shl  bl, 1
-5325  cmp  bl, 0x48
-5328  jb   .4
-532A  mov  bl, 0x40               ;   clamped
-.4
+5325  cmp  bl, 0x48 / mov bl,0x40
 532C  and  bl, 0x78               ; row, a multiple of 8
 532F  or   bl, al
 5331  mov  al,[0xFF7E]
@@ -201,42 +440,28 @@ converter.
 5338  mov  al,[bx+0x54D5]         ; <- the table
 533C  mov  ah, bh
 533E  jne  .5
-5340  sub  ax, 0x17               ;   configuration penalty of 23
+5340  sub  ax, 0x17               ;   device stowed: minus 23
 .5
 5343  shl  ax, 1
 ```
 
-**It is a two-dimensional table lookup at `0x54D5`, eight columns by nine rows.**
+Nine rows by eight columns, 72 bytes at `0x54D5`-`0x551C`, indexed by altitude
+in 4,096 ft steps and by load factor in buckets of one g. The value doubled,
+times `delta/16`, lands in the 16.16 altitude accumulator at `0x510E`.
 
-The column is the bank magnitude in buckets of ten with a dead zone of five,
-saturating at bucket 7 — so bank magnitudes above 75 all give the maximum rate.
+The `sub ax, 0x17` fires when the device in `[0xFF7E]`'s low field is **stowed**,
+and 23 is exactly the table's sea-level 1 g entry — so clean, level, at sea
+level the term is zero, and deploying the device adds a constant 23 of lift.
+That is a high-lift device, which fits the 242/325 kt limits on that field.
 
-The row is `altitude >> 10`: `[0x5116]` is `altitude >> 8`, doubled and masked
-to multiples of 8, so the row advances every 1024 altitude units. At four feet
-per unit that is **one row per 4,096 feet**, nine rows covering the aircraft's
-whole envelope. Turn rate falling with altitude is exactly right — thinner air
-means a higher true airspeed for the same indicated, and a wider turn.
-
-The table occupies `0x54D5`-`0x551C`, which sits inside the data gap between the
-last instruction at `0x5484` and the next at `0x5565`. It is 72 bytes, and
-nothing in the image writes to it.
-
-The `[0xFF7E]` test costs 23 off the rate when the low two bits are not 2 — one
-of the two device states penalising the turn.
-
-### `[0xAB64]` is the bank angle
-
-It has exactly two uses, and both are what bank does and nothing else does:
-
-- it indexes the turn-rate table, and
-- it divides thrust in the speed equation.
-
-Rate of turn from bank, and speed bled off in a turn. The bucket size of ten
-with saturation at 75 reads as degrees.
+What the term means physically past that is **open**. It grows with load factor,
+which is lift, but it also grows with altitude, which lift does not; a plausible
+reading is that it compensates the `speed * sin(pitch)` term for indicated
+against true airspeed, but that has not been shown.
 
 ## Ground handling
 
-`0x53CD` constrains the `[0x5084]` control axis, and only near the ground:
+`0x53CD` constrains the pitch attitude, and only near the ground:
 
 ```
 53CD  cmp  word [0x5115], 0x14   ; altitude at or below 20 units
@@ -245,7 +470,7 @@ with saturation at 75 reads as degrees.
 53D8  shr  dx,1 / shr dx,1       ;   / 4
 53DC  or   ax, ax
 53DE  js   .neg
-53E0  shr  dx,1 / shr dx,1       ;   / 16 for the positive side
+53E0  shr  dx,1 / shr dx,1       ;   / 16 for the nose-up side
 53E4  sub  ax, dx
 53E6  jmp  .clamp
 .neg
@@ -280,23 +505,21 @@ with saturation at 75 reads as degrees.
 Ground level is `[0x5115] = 20`, so the test selects **on the ground** and the
 airborne case returns the input untouched.
 
-On the ground the axis bleeds toward zero — asymmetrically, at `delta/4` from
-the negative side and `delta/16` from the positive — and is then clamped to a
+On the ground the attitude bleeds toward level and is clamped to a
 speed-dependent envelope:
 
-| Side | Limit |
-|---|---|
-| positive | `min(speed * 2, 2047)` |
-| negative | `-min(speed * 2, 256)` |
+| Side | Limit | As an angle |
+|---|---|---|
+| nose up | `min(speed * 2, 2047)` | up to 11 degrees |
+| nose down | `-min(speed * 2, 256)` | 1.4 degrees |
 
-**Authority proportional to airspeed, with eight times more of it one way than
-the other.** That is a nosewheel on the runway: rotation authority grows as
-speed builds, up to a large value, while the opposite deflection stays capped
-because the nose cannot go through the tarmac.
+**Rotation authority that grows with airspeed, eight times more of it up than
+down.** That is the undercarriage: you cannot rotate until you have speed, and
+the nose cannot go through the tarmac.
 
-## The control axes
+## Aerodynamic stability
 
-`[0x5084]` and `[0x4FCC]` both centre themselves when nothing drives them:
+Pitch and bank both decay toward level when nothing drives them:
 
 ```
 4F49  mov  di, cx              ; delta
@@ -316,8 +539,9 @@ because the nose cannot go through the tarmac.
 4F6C  mov  [0x5084], ax
 ```
 
-Reduce the magnitude, clamp, restore the sign — a stick returning to neutral
-when released, at 32 units per frame delta.
+The same block then repeats for `[0x4FCC]`. Reduce the magnitude, clamp, restore
+the sign — an aircraft returning to wings level and level flight at 32 units of
+angle per frame delta.
 
 ## Device states
 
@@ -338,103 +562,30 @@ when released, at 32 units per frame delta.
 ```
 
 Each field starts at 2 when the device is deployed and escalates to 6 and then 7
-as speed passes its two limits. Two devices with *different* limits — 260 and
-365 against 242 and 325 — which is what undercarriage and flaps look like, the
-escalation being overspeed damage. The turn-rate lookup reads the same byte.
+as speed passes its two limits — undercarriage and flaps, the escalation being
+overspeed damage. The low field's deployment adds lift in the vertical-rate
+lookup, which is what a high-lift device does.
 
-## Position integration
+## Data regions proven so far
 
-```
-5123  mov  ax,[0x347B]      ; frame delta as 8.8
-5126  imul word ptr [0xAE68]
-512A  mov  cx, dx           ; keep the high word
-512C  mov  ax,[di+0x143A]   ; a direction component
-5130  imul cx
-5132  add  ax, bp           ; accumulate 32-bit
-5135  adc  dx, bp
-```
+All of these are in the disassembler's `KNOWN_DATA` guard, so no future attempt
+to widen coverage can quietly turn them into code.
 
-Speed times time times direction, summed into a 16.16 position. `[di+0x143A]`
-and `[di+0x143B]` are fields of a per-entity record; `[si+0x163A]` below belongs
-to the same family.
+| Range | Bytes | What |
+|---|---:|---|
+| `0x143A`-`0x1E39` | 2560 | sine table, 1024 words, cosine 512 bytes on |
+| `0x5485`-`0x54D4` | 80 | manoeuvre envelope, 8 altitudes x 10 speeds |
+| `0x54D5`-`0x551C` | 72 | vertical-rate table, 9 altitudes x 8 load factors |
 
-Control authority is scaled by speed at `0x5000`:
-
-```
-5002  sar  dx,1 / rcr ax,1   ; a 32-bit value, halved
-5006  mov  cx,[0xAE68]
-500A  cmp  cx, 0x7D0         ; floored at 2000, which is 250 kt
-5010  mov  cx, 0x7D0
-5013  shl  cx,1 / shl cx,1
-5017  idiv cx
-```
-
-Dividing by speed with a floor is the standard way to scale control authority:
-the faster you go, the less angular change a given input buys per unit of
-distance, and at a standstill it cannot blow up.
-
-## Not yet identified
-
-`0x5416`, called only from `0x503D`, computes an angle-like quantity and clamps
-it to the asymmetric range **-30 to +90**:
-
-```
-5416  push cx
-5417  sar  ax, 1
-5419  cmp  ax, 0x2D00 / mov ax,0x2CFF    ; clamp to +-11519 ...
-5421  cmp  ax, 0xD300 / mov ax,0xD301    ;   so the byte divide cannot overflow
-5429  mov  cl, 0x5A
-542B  idiv cl                            ; / 90
-542D  mov  bl, al
-542F  call 0x5450
-5432  pop  cx
-5433  cmp  cl, al
-5435  jge  .1
-5437  add  al, cl / shr al, 1            ; average with the incoming cx
-.1
-543B  add  al, bl
-543D  jo   .ovf
-543F  cmp  al, 0xE2 / jl  .lo            ; -30
-5443  cmp  al, 0x5A / jg  .hi            ; +90
-```
-
-and `0x5450` supplies a reciprocal term from a per-entity field:
-
-```
-5450  mov  cx,[si+0x163A]
-5454  cmp  cx, 0xA    / jb .out          ; reject |cx| < 10 either sign,
-5459  cmp  cx, 0xFFF6 / ja .out          ;   so the divide is safe
-545E  mov  ax, 0xFFFF
-5461  mov  dx, 4
-5464  idiv cx                            ; 327679 / cx, about 5*65536/cx
-5466  abs
-546C  cmp  ax, 0x64 / jae .out           ; must come out under 100
-5471  mov  dl, al
-5473  mov  al, 0x14
-5475  imul ch                            ; 20 * high byte of the field
-5477  add  ax, 0x80
-547A  mov  al, 0xF6                      ; -10
-547C  add  al, dl
-547E  add  al, ah
-5481  .out: mov ax, 0x0A63
-```
-
-The divide by 90 and the -30..+90 bounds say it is an angle in degrees, and the
-reciprocal of a per-entity field says it depends on something like a rate or a
-radius. Which angle is open.
-
-`0x4188`, also called from the model at `0x5241`, is a sound call —
-`lcall [0xFC14]` with `ah=0x10` — gated by a patched immediate at `0x418A` that
-doubles as the effect number and the on/off flag. Sound is deferred, so it is
-noted and left.
+The values themselves are game data and stay out of this repository; the asset
+converter reads them at build time on the user's machine.
 
 ## Open
 
-- Which angle `0x5416` produces, and what `[si+0x163A]` is.
-- The pitch axis. `[0x4FCC]` self-centres like `[0x5084]` but has not been
-  followed to a consumer.
-- `[0x5119]`, an instruction immediate initialised to `0x8000` at `0x4E89` and
-  read at `0x50AD`. `0x5571` has two more of its own at `0x5575` and `0x5582`.
-- The contents of the turn-rate table at `0x54D5`. Reading it would give the
-  actual rates, but the values are game data and stay out of this repository;
-  the converter reads them at build time on the user's machine.
+- What the vertical-rate table physically represents, given that it grows with
+  altitude.
+- `0x551D`-`0x5564`, 72 more bytes in the same gap, not yet reached by anything.
+- `[0x5245]`, which takes an `adc` of a sign byte at `0x5192`.
+- `0x4188`, called from the model at `0x5241`, is a sound call —
+  `lcall [0xFC14]` with `ah=0x10` — gated by a patched immediate at `0x418A`
+  that doubles as the effect number and the on/off flag. Sound is deferred.
