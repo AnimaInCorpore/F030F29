@@ -600,9 +600,29 @@ factor K, less a fixed offset — is what the caller (`0x50FD`) scales by
 `delta/16` and adds into the altitude accumulator. More excess speed and a
 more level attitude convert to more climb.
 
-**Short of the reference speed** (`margin < 0`), a partial recovery is tried
-first — `dx += cx/4` — and if that is enough (`jae`), the same climb-term path
-runs on the reduced margin. If it is *still* short:
+**Short of the reference speed** (`margin < 0`), the code tries a quarter-speed
+grace margin before deciding how bad the shortfall is:
+
+```
+5375  sub  ax, ax
+5377  mov  bx, cx
+5379  shr  bx, 1 (twice)          ; bx = cx/4, a quarter of the reference speed
+537D  add  dx, bx                ; dx = margin + cx/4
+537F  jae  0x539D                ; deficit <= cx/4: "near miss"
+5381  div  cx                    ; deficit > cx/4: falls through here
+```
+
+The `jae` at `0x537F` is the same carry-flag idiom as the one at `0x5373` — it
+is testing the *sign* of `margin + cx/4` via unsigned overflow on the `add`,
+not comparing magnitudes directly. Working through both directions settles
+which branch is which: taken (→ `0x539D`) exactly when the shortfall is **at
+most a quarter of the reference speed** — a near miss. Not taken (falls
+through to the `div` at `0x5381`) when the shortfall is **more than a quarter**
+— i.e. the *larger* deficit goes to `div`, the *smaller* one goes to `0x539D`.
+That is the reverse of the natural guess, and reverse of an earlier pass
+through this code, which had the two swapped.
+
+### The near-miss branch, `0x539D`
 
 ```
 539D  mov  ax,[0x347B] / shr x2 / neg      ; -delta/4
@@ -617,19 +637,63 @@ runs on the reduced margin. If it is *still* short:
 53C1  call 0x53CD                          ; reclamp pitch
 53C4  or   byte [0xAF81], 8                ; the departure flag
 53C9  sub  ax, ax
-53CB  jmp  loc_5399                        ; returns 0 — 0xC00, a fixed sink
+53CB  jmp  loc_5399                        ; returns 0 - 0xC00, a fixed sink
 ```
 
-Below a large enough deficit, the aircraft cannot hold the g it is being asked
-for at this speed and altitude: the bank is forced to zero, the bank it *had*
-is dumped into the heading accumulator as an uncommanded yaw, pitch is
-reclamped, `[0xAF81]` bit 3 is set, and the altitude term becomes a fixed sink.
-A wing drop that becomes a yaw, and a flag the rest of the code can key a
-warning or a control lockout on — a stall/departure model, not a hard failure.
+Every path through here sets the departure flag (`[0xAF81]` bit 3) and returns
+a fixed sink (`0 - 0xC00`) via the shared exit at `0x5399`. The bank-zeroing
+and heading fold only happen when the pitch attitude, minus a quarter frame
+delta, is at or below roughly -180 degrees (`0xC001` is -16383) — deep beyond
+vertical, essentially inverted or in a steep dive. Outside that, the flag and
+the sink still apply, just without touching bank or heading.
 
-The milder deficit that doesn't reach this branch instead returns a term
-derived from the margin alone via a plain division (`0x5381`), smaller than the
-K-scaled climb term — an in-between case, still short of departure.
+Being just barely below the speed the current g and altitude call for is
+treated as departing controlled flight: a fixed sink, always, and a wing drop
+folded into yaw when already pointed steeply down.
+
+### The large-deficit branch, `0x5381`: an apparent overflow
+
+This is the path the open item pointed at. Its shape looked, at first read,
+like the same kind of scaled term as the comfortable-margin case — a `div`
+feeding a `shr`/`add` chain that produces roughly `quotient * 3/16` before the
+shared return. Working the actual arithmetic through says otherwise.
+
+`div cx` is the 16-bit unsigned form: dividend is `DX:AX`, quotient goes to
+`AX`. At this point `AX` is `0` (from `0x5375`, untouched since), and `DX`
+still holds `margin + cx/4` — which, since we are in the not-taken branch of
+the previous `jae`, is negative. As a 16-bit bit pattern, any negative value is
+`>= 0x8000`, so `DX:AX` with `AX = 0` is at least `0x8000_0000` — roughly two
+billion — while `CX` (the reference speed, scaled) is at most a few thousand.
+The quotient overflows 16 bits by five to six orders of magnitude, every time.
+
+A simulation over the reachable `(speed, cx)` domain confirms it is not an
+edge case: sampling every table entry against a speed range, **every input
+that reaches this branch overflows the divide**. A concrete example — 30,000
+ft, 1 g, 225 kt, comfortably inside the aircraft's envelope, well short of
+anything exotic — gives a reference speed of 408 kt, a deficit past the
+quarter-margin cutoff, and a quotient of 1,302,849 going into a 16-bit `AX`.
+
+Unsigned `DIV` overflow raises `INT 0` on the 8086. No custom handler for it
+was found — no DOS "set interrupt vector" call (`AH=0x25`) and no direct write
+to the interrupt vector table turned up anywhere in the image — so this would
+run into DOS's default handler, which prints "Divide overflow" and terminates
+the program.
+
+The likely mechanics: the deficit belongs in the *low* word of the dividend
+with the sign replicated into the high word (`ax = dx; cwd`, or an ordinary
+16-bit `idiv`), not zero-extended into the low word while the deficit itself
+sits in the high word. That would make the divide `(margin + cx/4) / cx` — a
+small, plausibly-scaled quotient in keeping with everything else this routine
+computes — instead of `(margin + cx/4) * 65536 / cx`. Put the deficit in the
+wrong half of a register pair once, by hand, in 1990, and it looks exactly
+like this.
+
+**For the port:** this is not behaviour worth reproducing. A 1:1 translation
+that faithfully overflowed a divide and crashed would be a bug the port adds
+back on purpose. The sound port-side choice is to treat this branch the same
+as the near-miss one, or clamp the quotient — either is a defensible
+reconstruction of what the code was reaching for; reproducing the crash is
+not.
 
 ## Ground handling
 
@@ -764,9 +828,6 @@ converter reads them at build time on the user's machine.
   overspeed escalation and the spawn state have been found.
 - The exact scale of the energy term returned by the stall/departure routine —
   its structural role is established, but not a real-world climb rate.
-- The moderate-deficit path at `0x5381`'s precise shape; it clearly returns a
-  smaller, division-based term than the comfortable-margin case, but has not
-  been worked out instruction by instruction.
 - `0x4188`, called from the model at `0x5241`, is a sound call —
   `lcall [0xFC14]` with `ah=0x10` — gated by a patched immediate at `0x418A`
   that doubles as the effect number and the on/off flag. Sound is deferred.
