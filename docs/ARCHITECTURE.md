@@ -116,6 +116,21 @@ in cycles. The 24-bit offsets in the archive index should widen to 32 bit;
 Since converted assets may not be redistributed, the converter has to run on the
 user's machine, at install time or first launch with a cache.
 
+## Self-modifying code does not come across
+
+The original keeps its hot state — airspeed, altitude, both control axes — in
+the immediate operands of the instructions that read it. On an 8086 that is
+faster than a memory operand. On the 68030 it is a liability: every write into
+the instruction stream needs the instruction cache invalidated, and a missed
+invalidation gives a fault that only appears when the line happens to be
+cached.
+
+So these do not get translated literally. Each becomes an ordinary variable,
+and each patch becomes a normal store. That costs a few cycles per access and
+saves the cache maintenance, which is more expensive, as well as keeping the
+code debuggable. It is a deliberate departure from the 1:1 rule, and the
+inventory of what has to be converted is in [GAME-LOOP.md](GAME-LOOP.md).
+
 ## Build
 
 No `make` on the development machine. The build is bash scripts, as in

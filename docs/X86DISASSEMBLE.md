@@ -142,6 +142,14 @@ model writes the speed into the instruction that will load it. When a variable
 has writers and readers but no plausible consumer, check whether its address
 lands inside an instruction.
 
+In this binary that turned out to be the *standard* way of holding working
+state, not an occasional trick — airspeed, altitude and both control axes are
+all stored in the immediate of the instruction that reads them. On an 8086
+`mov ax, imm` is appreciably faster than `mov ax, [mem]` because the immediate
+is already in the prefetch queue, so it is an optimisation rather than
+obfuscation. Once you have found one, assume there are more and check every hot
+variable the same way.
+
 **Signed versus unsigned comparisons.** `cmp al,0x41 / jl` is *signed*, so
 values from `0x80` up take the low branch too. Reading it as unsigned sent me
 looking for a second dispatch table that does not exist. When a dispatcher seems
