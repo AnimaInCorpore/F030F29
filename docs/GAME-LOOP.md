@@ -1002,6 +1002,103 @@ is tied into the main state dispatch, not just standalone) and `[0x977E]`
 not fully traced back to what sets them. `[0xD1DF]`, cleared alongside
 `[0xD1E4]` at reset, and the no-waypoints fallback path are likewise open.
 
+## `0x993E`: scripted triggers, gating the waypoint system
+
+Found sitting right next to the seeded `0x9930` (the `0x9811` scan callback,
+see above) — same neighbourhood, nothing else in common. `0x993E` has its
+own four callers, all in the main-loop region, and turns out to be a small
+condition-testing bytecode interpreter that the waypoint system depends on
+directly.
+
+### The dispatch
+
+```
+993E  mov  bl, [0xF3A2]         ; the theatre
+      sub  bh, bh
+      shl  bx, 1
+      mov  si, [bx - 0x637C]      ; per-theatre script pointer, table at 0x9C84
+
+.next (994A)
+      lodsb                        ; al = opcode
+      cmp  al, 0xFE
+      ja   .skip_byte                ; al == 0xFF
+      je   .flag_test                  ; al == 0xFE
+      jl   .position_test                ; al signed < 0xFE, i.e. 0x80-0xFD
+      ; falls through: al = 0x00-0x7D
+```
+
+Four opcode classes, dispatched by nothing more than three compares against
+the same byte — no jump table.
+
+**`0x00`-`0x7D`: a per-item threshold.** Read a word `bx` from the script,
+compare `[bx+0x2F8A]` (a byte table, indexed directly by that word) against
+`al` itself — the opcode value doubles as the comparison threshold. At or
+above it, keep executing the script; below it, stop. A compact "does item bx
+meet level N" gate.
+
+**`0xFE`: a flag test.** Read a word `bx`, test `[bx+0x3021]` as a full byte.
+Zero: continue. Non-zero: stop, with carry set.
+
+**`0xFF`: skip one byte and return** — a plain terminator.
+
+**`0x80`-`0xFD`: is an object here?** Read three words — `bx`, `dx`, `ax` — and
+call `0x9986` against the list at `[0x2E62]`, then, if that fails, against
+`[0x2E66]`:
+
+```
+9986  or   bp, bp              ; bp = a list head, passed in by the caller
+      je   .not_found
+.walk (998A)
+      cmp  [bp+0x16], ax          ; the same world-coordinate fields as
+      jne  .next_node               ; everywhere else in this project -
+      cmp  [bp+0xE], dx              ; +0xE is X, +0x16 is Z
+      jne  .next_node
+      cmp  [bp+0x30], bx              ; a third field - type or ID
+      je   .found                       ; all three match
+.next_node
+      bp = [bp]                           ; follow the list
+      or   bp, bp
+      jne  .walk
+      stc                                    ; exhausted, no match
+      ret
+```
+
+Search a linked list for a node at world position `(dx, ax)` — the standard
+X/Z fields — whose `+0x30` field also equals `bx`. Found: return with carry
+clear. List exhausted with no match: carry set. Back in `0x993E`, "found in
+either list" continues the script; found in neither stops it. Read plainly:
+*if an object of kind `bx` exists at position `(dx, ax)`, carry on.*
+
+### Where it's called from, and why that matters
+
+All four call sites gate real, previously-documented state:
+
+| Site | Gated by | On success (script completes) |
+|---|---|---|
+| `0xC83E` | — | sets `[0xFB3A]` bit 3 |
+| `0xF116` | `[0xFB3A]` bit 3 clear, `[0xFB33]` bit 0 set | falls into the theatre check that gates `0xCFDE`'s waypoint advance (`0xF11B`-`0xF129`, already documented above) |
+| `0xF2B0` | `[0xF26E]` bit 7 | falls into a check of `[0xCFE2]`, the waypoint cursor, against 5 |
+| `0xF58D` | — | tests `[0xFB3A]` bit 3 again |
+
+`[0xFB3A]` bit 3 is the same flag `0xF252` in the main loop uses to gate
+`0xB1B8`, the countdown-timer utility from the `0xCC8C` work. So the same
+flag this script sets is what turns a timer facility on elsewhere in the
+frame — and the waypoint cursor and the theatre-gated advance are read right
+after a call to this interpreter, not coincidentally next to it.
+
+Put together: `0x993E` is a per-theatre **mission script** - condition codes
+that test per-object thresholds and flags, and a "does the right object
+exist at the right place" check reusing the exact position-keyed lookup
+pattern seen in `0x3160`'s tree and `0xD18D`'s arrival check - and the
+waypoint system's progression depends on it succeeding.
+
+### Open
+
+The tables the script's opcodes index (`0x2F8A`, `0x3021`, the per-theatre
+scripts at `0x9C84`) are game data and stay out of this repository. What
+`[0x2E62]`/`[0x2E66]` (the two object lists `0x9986` searches) and
+`[0xF26E]`/`[0xFB33]` specifically are has not been traced further.
+
 ## Hot variables live inside instructions
 
 Before anything else in this region: **the program keeps its working state in
@@ -1312,11 +1409,6 @@ coordinates are arbitrary and get scaled at instancing time.
 - What `[0x2E70]`-`[0x2E94]`, the small tables `0x3F62`'s special case reads,
   actually hold, and what `[0x3259]`/`[0x326C]`/`[0x3261]` (the second tracked
   position in the distance cue) represents.
-- `sub_0000_993E`, found in passing right next to the seeded `0x9930` and
-  unrelated to it: a per-theatre byte-stream command interpreter (table at
-  `0x9C84`, indexed like `0x75FC`) with four opcode classes, called from four
-  sites (`0xC83E`, `0xF116`, `0xF2B0`, `0xF58D`) that have nothing to do with
-  `0xCC8C`. Not decoded beyond its shape.
 - The three other callers of `0x1F3A`'s rotation-matrix builder
   (`0x3AF5`, `0x3D9E`, `0xEE2C`), and the three other direct callers of
   `0x3160`'s tree insert (`0x3B37`, `0x45F7`, `0xCE87`).
