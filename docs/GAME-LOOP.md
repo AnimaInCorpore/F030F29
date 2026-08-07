@@ -759,10 +759,41 @@ term contributed by each item the scan visits. What the summed field represents
 is not identified; a mission-long tally is consistent with score, remaining
 ordnance, or a kill count.
 
-**`0x9824`** gates entry on `[bp+0x32]` bit 6 and the sign of `[bp+0x2E]`, then
-subtracts a per-call amount from `[bp+0x2E]` before allowing the scan to run —
-a budget that is spent down each time this is called, with the scan only
-running while it stays positive. The scan loop itself (`0x9848` onward) walks
+**`0x9824` is an amortising throttle, not a plain gate — read closely, its
+short-circuit runs backwards from what a first pass suggested:**
+
+```
+9824  test [bp+0x32], 0x40    ; a disable bit
+      je   .go
+      ret                       ; set: skip entirely, no charge
+.go
+      ax = [bp+0x2E]              ; the budget
+      or   ax, ax
+      jns  .charge
+      ret                           ; already negative: skip (shouldn't
+                                       ;   normally happen - the throttle
+                                       ;   below is what drives it negative)
+.charge
+      ax -= cx                        ; cx = [bp], the item's OWN first field -
+      [bp+0x2E] = ax                    ;   a per-item cost, debited every call
+      jle  .run_scan                      ; budget crossed zero: pay for it by
+                                             ;   actually running the scan
+      ret                                     ; still positive: skip this call,
+                                                 ;   CF=0 (no-op success)
+.run_scan (9841)
+      ... the scan loop at 0x9848, already documented below ...
+```
+
+So `[bp+0x2E]` is not "a budget the scan spends" — it is a **debt counter that
+this gate pays down by a per-item amount every call**, and only once it goes
+non-positive does the (expensive) scan actually run at all. The scan's own
+body then reuses the *same field* as its running accumulator (see below),
+which is why it does not reset it: whatever the scan leaves `[bp+0x2E]` at
+becomes next call's starting debt. One caller (`0x4037`, right before calling
+`0x9811`) explicitly clears the disable bit each time first — `and
+byte[bp+0x32],0xBF` — so something else sets it, not chased further.
+
+The scan loop itself (`0x9848` onward) walks
 a structure via `es:[di+0x22]`, looks entries up in a table at `[si+0x2EB6]`,
 and calls the accumulator once per item, continuing while a running total
 (swapped through `[bp+0x2E]`) stays non-negative.
