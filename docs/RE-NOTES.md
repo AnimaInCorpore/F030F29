@@ -205,6 +205,49 @@ reason worth remembering: they hold data pointers in most contexts, so
 `jmp si` occurs somewhere. And that `jmp si` is the inline-string return, not a
 function pointer at all.
 
+## Call graph
+
+```bash
+python tools/re/disasm.py --callgraph 20
+```
+
+Hunting for the game loop by looking for anchors - a trig table, a HUD label,
+a distinctive constant - did not work. Two candidate tables turned out to be
+data misread as code. The call graph finds it structurally instead.
+
+346 routines, 351 edges. The routines that call the most others:
+
+| Routine | Calls | Called from | What it looks like |
+|---|---:|---:|---|
+| `0xCC8C` | 18 | 3 | dispatches into `0x3000`-`0x4900`, the largest code run |
+| `0xE19F` | 18 | 3 | callees are the inline-string family, so menus and text |
+| `0xC660` | 11 | 2 | |
+| `0xD20F` | 7 | 12 | the resource loader — a known quantity, and a useful check that the graph is right |
+
+**`0xCC8C` is the way into the game code.** It is called from `0xF2C9`, and the
+`0xF2xx` region also holds the HUD dispatcher at `0xF263`, so that region is the
+per-frame update. `0xCC8C` opens by testing `[0xF3A2]` against `0x62` - the same
+theatre variable that selects a group in the placement-list walker at `0x438D`
+and indexes the per-theatre table in `0x75FC`.
+
+### Attributing calls to routines
+
+Worth recording, because the first two attempts produced confident nonsense.
+
+Routine boundaries are not known, so a call site has to be attributed to
+whichever entry point it sits under. "The nearest call target at or below the
+site" is not good enough: the last routine before a large unreached region
+collects every call site in that region. That put `0xE8F6` at the top with 87
+callees, from one caller - which reads exactly like a master dispatcher. It is
+a 0x2B-byte routine that copies a table and returns.
+
+A second guess, that the Addr tuple sorting by segment rather than linear
+address was to blame, was also wrong and changed nothing.
+
+What works is bounding an owner by *contiguously reached* instructions: a gap
+in the sweep ends the routine, and sites past it belong to nobody. That drops
+the edge count from 607 to 351 and `0xE8F6` off the list entirely.
+
 ## Operating system interface
 
 Remarkably narrow; the game drives almost everything straight at the hardware.

@@ -427,6 +427,12 @@ def main() -> None:
                     help="extra entry point as SEG:OFF hex (repeatable)")
     ap.add_argument("--seeds", default="re/seeds.txt",
                     help="file of resolved indirect targets, one SEG:OFF per line")
+    ap.add_argument("--callgraph", type=int, nargs="?", const=20, default=0,
+                    metavar="N",
+                    help="print the N routines that call the most others, with "
+                         "their callers and callees. Finding the game loop by "
+                         "hunting for tables does not work; the call graph "
+                         "shows it structurally")
     ap.add_argument("--scan-calls", type=int, nargs="?", const=1, default=2,
                     metavar="MIN_SITES",
                     help="also seed byte-scanned call targets; the value is how "
@@ -500,6 +506,53 @@ def main() -> None:
             shown = " ".join(str(s) for s in sites[:5])
             more = "" if len(sites) <= 5 else f" (+{len(sites) - 5})"
             print(f"  {len(sites):4d}x  {form:<28} at {shown}{more}")
+        print()
+
+    if args.callgraph:
+        # Attribute every call to the routine it sits in.
+        #
+        # "The nearest call target at or below the site" is not good enough: the
+        # last routine before a large unreached region then collects every call
+        # site in that region, and the result is a confident-looking top entry
+        # that is pure artefact. So an owner only extends over *contiguously
+        # reached* instructions - a gap ends it, and sites past the gap belong
+        # to nobody.
+        owner_of = {}
+        current = None
+        prev_end = None
+        for addr in sorted(d.insns, key=lambda a: a.linear):
+            if prev_end is not None and addr.linear != prev_end:
+                current = None                  # a gap: the routine ended
+            if addr in d.call_targets:
+                current = addr
+            if current is not None:
+                owner_of[addr] = current
+            prev_end = addr.linear + d.insns[addr].size
+
+        callees = defaultdict(set)
+        for target in sorted(d.xrefs):
+            if target not in d.call_targets:
+                continue
+            for site in d.xrefs[target]:
+                insn = d.insns.get(site)
+                if insn is None or insn.mnemonic not in CALLS:
+                    continue
+                owner = owner_of.get(site)
+                if owner is not None and owner != target:
+                    callees[owner].add(target)
+
+        ranked = sorted(callees.items(), key=lambda kv: -len(kv[1]))
+        print(f"call graph: {len(d.call_targets)} routines, "
+              f"{sum(len(v) for v in callees.values())} edges")
+        print(f"the {args.callgraph} routines that call the most others")
+        print()
+        for owner, targets in ranked[:args.callgraph]:
+            callers = [c for c in d.xrefs.get(owner, ())
+                       if d.insns.get(c) is not None
+                       and d.insns[c].mnemonic in CALLS]
+            print(f"  {owner}  calls {len(targets):2d}, called from {len(callers)}")
+            shown = " ".join(str(t) for t in sorted(targets)[:10])
+            print(f"      -> {shown}{' ...' if len(targets) > 10 else ''}")
         print()
 
     print(f"unreached regions ({len(gaps)} total, largest 15)")
