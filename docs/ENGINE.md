@@ -148,6 +148,7 @@ routine the engine does not have.
 | `src/sincos.s` | 1787 | sine and cosine tables |
 | `src/keyboard.s` | 159 | keyboard interrupt handler |
 | `src/rot_vbl.s` | 80 | VBL handler |
+| `src/hud.s` | 155 | flight HUD readout — see [HUD.md](HUD.md) |
 | `src/dsp/3d.asm` | 2591 | the DSP56001 geometry pipeline |
 | `src/inc/` | | `bios.s`, `xbios.s`, `gemdos.s`, `colours.s` — included, not assembled separately |
 

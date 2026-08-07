@@ -40,6 +40,7 @@ far is written up in `docs/`:
 | Document | Contents |
 |---|---|
 | [ENGINE.md](docs/ENGINE.md) | what is in `src/`, how to build it and how to check it |
+| [HUD.md](docs/HUD.md) | the flight HUD readout — units, placeholder data, verifying it |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the port divides work between the 68030 and the DSP |
 | [GAME-LOOP.md](docs/GAME-LOOP.md) | the per-frame update, the timing, the state variables |
 | [FLIGHT-MODEL.md](docs/FLIGHT-MODEL.md) | units, thrust against drag, the turn-rate table, ground handling |
