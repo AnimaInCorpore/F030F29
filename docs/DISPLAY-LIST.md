@@ -66,6 +66,15 @@ So this interpreter drives some other vector list: the HUD, the cockpit
 instruments, or the wireframe map. Relative draw, absolute draw, angle and
 repeat opcodes are exactly the instruction set for that.
 
+**Not the cockpit instrument panel, specifically** — that one has its own
+interpreter. `0x0A72`, called from the panel states (`0`, `8`, `10` in
+[GAME-LOOP.md](GAME-LOOP.md)'s state table), has the same *kind* of
+instruction set — position accumulator, relative/absolute move, mirrored and
+single draws — but dispatches through a hand-written compare cascade over the
+full byte range rather than this table, and calls entirely different draw
+primitives. Two separate vector languages in the same binary; whatever
+`0x4777` drives is still open.
+
 ## Still looking for the model renderer
 
 Tool: `tools/re/findtable.py` lists every indirect near call/jmp with a memory

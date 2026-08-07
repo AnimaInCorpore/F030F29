@@ -152,8 +152,64 @@ AA24  mov  si, 5
 
 `[0xB43A]` is the throttle, already established in
 [FLIGHT-MODEL.md](FLIGHT-MODEL.md) — 0..500, so a scale of 50 covers it in
-round tenths. `[0xB444]`'s scale of 800 doesn't match anything documented yet.
-`0xAA45` itself (the bar-drawing primitive) is not traced.
+round tenths.
+
+`[0xB444]` turns out to be **fuel remaining**. It is the high word of a 32-bit
+pair with `[0xFB3F]` as the low word, and the flight model — right next to the
+throttle read at `0x4F9A`, already documented — decrements that pair every
+frame by `throttle * 16 * delta`, then clamps it at zero:
+
+```
+4F9A  mov  ax, [0xB43A]        ; throttle
+      shl  ax, 1 (four times)    ; * 16
+      mul  cx                     ; * delta
+      sub  [0xFB3F], ax             ; 32-bit pair -= (throttle*16*delta)
+      sbb  [0xB444], dx
+      ja   .ok                       ; didn't go negative: done
+      cdq                              ; else clamp to zero
+      mov  [0xB444], dx
+```
+
+Consumption proportional to throttle, a 32-bit counter so the sub-unit
+fraction doesn't get lost between frames, floored at zero when it runs out —
+textbook fuel burn. The scale of 800 at the gauge is consistent with a fuel
+capacity on that order; nothing else pins the unit down further.
+
+**`0xAA45` itself is an incremental bar gauge — it redraws only the change
+since last frame, not the whole bar:**
+
+```
+AA45  sub  dx, dx
+      div  cx                  ; target level = value / scale
+      cmp  ax, 0xA / clamp        ; 0..10 segments
+      add  si, [0xB04F]            ; si = a per-gauge "last drawn level" slot
+      mov  dl, [si]                  ; dl = the level drawn last frame
+      sub  al, dl                     ; al = delta
+      je   .done                       ; unchanged: nothing to draw
+      mov  [si], al                     ; ... (folded into the update below)
+      or   cl, al
+      jns  .grow
+      neg  cl                             ; shrinking: |delta| segments to erase
+.shrink (AA6D, loops |delta| times)
+      dx -= 2                               ; one row up per segment
+      si = 0xAAB1                            ; a fixed "blank" glyph
+      call 0xAA93                              ; erase one segment
+      loop
+.grow (AA7D, loops delta times)
+      al = [bx]                                ; bx walks a per-gauge glyph table
+      si = 0xAAB1 + al                           ; select the glyph for this segment
+      call 0xAA93                                  ; draw one segment
+      dx += 2                                        ; one row down per segment
+      bx += 1
+      loop
+```
+
+Two 8-row gauges (`0xAAC1`/`0xAAC3`, the glyph-selector tables passed in as
+`bx`), each a stack of up to ten small icons built up or torn down one segment
+at a time as the value changes, rather than a filled rectangle. `0xAA93` (push
+the glyph, position via `dx`, call `0xAA9F`) and `0xAA9F` (two calls to
+`sub_0000_022E`, not traced) are the actual pixel-level draw; not chased past
+confirming they are a draw primitive, not something that changes this reading.
 
 State 10 is a thin wrapper around the *same* routine:
 
@@ -175,6 +231,57 @@ State 10 draws the identical instrument panel to a second video page instead
 of the visible one. A back buffer for a smooth page-flip, or a picture-in-
 picture / satellite-view surface rendered off-screen — which, is not settled;
 either is consistent with what's here.
+
+### `0x0A72`: a second vector interpreter, distinct from `0x4777`
+
+States 0, 8 and 10 all open with `mov si, <address> / call 0x0A72` before
+anything else — a fixed vector stream drawing the panel's static artwork
+(bezels, outlines) ahead of the live gauges and icons. `0x0A72` is a byte-
+stream interpreter in the same *family* as the one in
+[DISPLAY-LIST.md](DISPLAY-LIST.md), but a different, separate one: where
+`0x4777` dispatches through an unscaled jump table (`jmp [bx+0x46A5]`,
+opcodes spaced by the table's stride), `0x0A72` is a hand-written cascade of
+range compares covering the full byte, `0x00` through `0xFF`:
+
+```
+0A72  lodsw                    ; al = opcode, ah = a parameter byte
+      cmp  al, 0x40 / jb .low     ; 0x00-0x3F: position accumulator
+      cmp  al, 0x60 / jb .mid       ; 0x40-0x5F: draw
+      inc  al / js .stop              ; 0x7F-0xFE: terminator, ret
+                                          ; 0x60-0x7E and 0xFF: call 0xC3BB, loop
+```
+
+**`0x00-0x1F`** adds `(ah-8, next word)` into a running position (`bx`, `cx`) —
+a relative move. **`0x20-0x3F`** does the same but zeroes `bx`/`cx` first — an
+absolute move. **`0x40-0x4F`** draws via `0x0B0D` *twice*, the second time with
+both coordinates negated — a mirrored pair, exactly what a symmetric
+instrument panel needs for matching left/right bezel halves in one command.
+**`0x50-0x5F`** draws once, unmirrored. A further split on `0xC0-0xE7` vs
+`0xE8+` (reached from the `al >= 0xC0` path) feeds two more coordinate
+variants into `sub_0000_096E` directly.
+
+The actual pixel work confirms this is a line renderer, not a coincidence of
+shape:
+
+```
+096E  mov  es, [0xC34]     ; the SAME video-page variable states 0/10 swap
+      ...                    ; bx:si and cx:di as line endpoints, bp=0x28(40)
+```
+
+`[0xC34]` is the video segment/page pointer already established for state
+10's page-swap — this draws straight into video memory. `0xC3BB` (the
+0x60-0x7E/0xFF action) resets two VGA Graphics Controller registers
+(Set/Reset to 0, then selects the Bit Mask index at port `0x3CE`) — a
+between-shapes state reset, consistent with a "next shape" or "flush" command
+in a vector stream.
+
+So `0x0A72` answers part of what [DISPLAY-LIST.md](DISPLAY-LIST.md) left open
+— "this interpreter drives some other vector list: the HUD, the cockpit
+instruments, or the wireframe map" was written about `0x4777`, and whatever
+`0x4777` turns out to draw, it is not this. The cockpit panel has its own,
+separate vector language, hand-rolled rather than table-dispatched. `0x0B0D`'s
+own internals and `sub_0000_096E`'s full line-drawing body are not traced past
+confirming what they are.
 
 ### States 1 and 11: a mirrored pair of gauge clusters
 
@@ -999,13 +1106,16 @@ coordinates are arbitrary and get scaled at instancing time.
 - The three other callers of `0x1F3A`'s rotation-matrix builder
   (`0x3AF5`, `0x3D9E`, `0xEE2C`), and the three other direct callers of
   `0x3160`'s tree insert (`0x3B37`, `0x45F7`, `0xCE87`).
-- All thirteen state handlers are now read at some depth. Still open within
-  them: `0xAA45` (the gauge-bar primitive states 0/10 use), `0x0A72` (called
-  by states 0/8/10), what `[0xB444]` is, `0x6703` (the odd-`bp` branch of the
-  icon blitter `0x6680`), and the exact control flow of `0xAE0A`'s blink-skip
-  path (does `pop si; ret` at `0xAE08` correctly resume the caller past its
-  trailing label, or does that depend on the `0x58B6`/`0x58CB` print chain
-  from a prior frame — not traced).
+- All thirteen state handlers are now read at some depth, `0xAA45` and
+  `0x0A72` included. What remains within them: `0xAA93`/`0xAA9F`/`0x022E`
+  (the gauge's pixel-level draw, confirmed as a draw primitive and not
+  chased further), `0x0B0D`'s own internals and `sub_0000_096E`'s full
+  line-drawing body (confirmed as the cockpit panel's line renderer, not
+  worked out instruction by instruction), `0x6703` (the odd-`bp` branch of
+  the icon blitter `0x6680`), and the exact control flow of `0xAE0A`'s
+  blink-skip path (does `pop si; ret` at `0xAE08` correctly resume the
+  caller past its trailing label, or does that depend on the
+  `0x58B6`/`0x58CB` print chain from a prior frame — not traced).
 - What triggers a transition between the thirteen states — `[0xA720]` is
   written in several places not yet examined, so what makes the player cycle
   through view modes (a key binding, most likely) is still open.
