@@ -82,6 +82,141 @@ against `0x62` at its first instruction, the placement-list walker at `0x438D`
 uses it to choose a group, and `0x75FC` indexes a per-theatre parameter table
 with it. Three routines found separately all key off the same byte.
 
+## `0xCC8C`, the way into the game code
+
+`0xCC8C` is called from the main loop (`0xF2C9`, `0xF2E6`) and dispatches into
+`0x3000`-`0x4900` and the `0xCF00`-`0xD200` range — the largest contiguous run
+of reached code in the image, and structurally distinct from the flight model:
+where `0x4EB6` is arithmetic on a handful of variables, this is closer to a
+grab-bag of small utility subsystems, each used from several places.
+
+Eighteen call targets, found the same way as `0x4EB6`'s: bound a routine by its
+contiguously reached instructions and dedupe the `call` targets inside.
+
+| Target | What it is |
+|---|---|
+| `0x1325` | pseudo-random generator — confirmed, see below |
+| `0xCFB3` | CRC-16/CCITT — confirmed, see below |
+| `0xCF81`, `0xCF9F` | an 8-byte record reader, feeding a wider working structure |
+| `0xCF5D`, `0xCF79` | the matching writer, repacking that structure back down |
+| `0xB1B8`, `0xD1D1` | a multi-slot countdown timer utility — see below |
+| `0x42BD` | random-bucketed selector over three spawn-time flags — see below |
+| `0x412C` | triggers `0x42A2` → `0x40AF`, the object-spawn-at-aircraft-position routine already known from the world-coordinate work above |
+| `0x4188` | the sound gate — see [FLIGHT-MODEL.md](FLIGHT-MODEL.md) |
+| `0x1F3A`, `0x314E`, `0x3160`, `0x3644`, `0x3F62`, `0x40A3`, `0x9811` | previewed only — first few instructions read, not yet worked out |
+
+### `0x1325` is the PRNG, and it is never reseeded
+
+```
+1325  mov  ax, 0        ; <- [0x1326], the seed, an instruction immediate
+1328  mov  dx, 0x4B
+132B  inc  ax
+132C  je   .skip
+132E  mul  dx            ; dx:ax = (seed+1) * 75
+.skip
+1330  sub  ax, dx
+1332  adc  ax, 0
+1335  mov  [0x1326], ax
+1338  ret
+```
+
+A multiplicative generator, self-modified in place like every other hot
+variable in this codebase. Simulating it exactly finds a cycle of 32,381
+values before it repeats, with a mean close to the theoretical uniform value
+— a working generator, not a broken one.
+
+`[0x1326]` has exactly one writer: itself. No timer, keystroke, or anything
+else seeds it anywhere in the disassembled 44.6% — every playthrough draws the
+same sequence, starting from the same compiled-in value, unless a seed write
+is hiding in the unreached 55%.
+
+### `0xCFB3` is a bitwise CRC-16/CCITT
+
+```
+CFB3  mov  bp, 0x1021    ; the CCITT polynomial
+CFB6  lodsw               ; dx = the first two stream bytes, byte-swapped
+...
+loc_CFC3:
+CFC3  rcl  dx, 1
+CFC5  sbb  bx, bx
+CFC7  and  bx, bp
+CFC9  xor  dx, bx         ; conditionally XOR the polynomial, textbook CRC-16
+CFCB  shl  al, 1
+CFCD  jne  .CFC3
+CFCF  loop .CFC0
+loc_CFD1:
+CFD3  shl  dx, 1 / sbb ax,ax / and ax,bp / xor dx,ax   ; 16 more flush steps
+```
+
+`0x1021` is unmistakable — this is the polynomial used by XMODEM/CCITT CRC-16,
+computed bit by bit over a `cx`-byte stream at `si`, with a second loop that
+flushes the last 16 bits through the same feedback. Called from `0xCCFD`
+(early in `0xCC8C`'s own body), from `0xCF4C` (right after the record-codec
+pair above), and from two sites elsewhere (`0xD91B`, `0xDBDA`). Something gets
+checksum-verified on the way into or out of this dispatch; which structure is
+still open.
+
+### The timer utility, and a data-region correction
+
+`0xB1D7` "arms" a slot with the current time plus an offset:
+
+```
+B1D7  sub  bh, bh
+B1D9  add  ax, [0xF895]         ; the free-running timer
+B1DD  mov  [bx - 0x4CEE], ax    ; store into a slot chosen by the caller's bx
+```
+
+`0xB1B8` cancels all of them at once:
+
+```
+B1B8  call 0xB1D7
+B1BB  mov  bx, 0xFC2D
+B1BE  mov  al, 0xFF
+B1C0  mov  [bx], al
+B1C2  mov  [bx+0xB], al
+B1C5  mov  [bx+0x16], al
+```
+
+Three flag bytes, eleven apart — a 3-slot array. `0xB1D7` is the far more
+common call (six sites: `0x344E`, `0x421D`, `0x4253`, `0xB1B8` itself,
+`0xB1CE`, `0xEE64`, plus one more), so this reads as a small, general-purpose
+"set a deadline in one of a few slots, or cancel them all" utility rather than
+anything specific to one feature.
+
+This also settles something worth recording precisely: `0xFC2D` sits *outside*
+the segment table documented in [RE-NOTES.md](RE-NOTES.md), which is nine
+words starting at `0xFC16` — 18 bytes, ending at `0xFC27`. The gap between
+that and the archive index at `0xFC4A` is 34 unaccounted bytes, and this
+3-slot, 11-byte-stride array (33 bytes) accounts for nearly all of it. No
+correction to the data guard was needed; the boundary was never claimed to
+reach that far, but the gap now has a name.
+
+### `0x42BD`: a bucketed random pick over the same three spawn flags
+
+```
+42BD  call 0x1325            ; al = a fresh random byte
+42C0  cmp  al, 0x60
+42C2  jae  .noop              ; 160 times in 256: do nothing at all
+42C4  sub  al, 0x20
+42C6  mov  bx, 0xB3F4
+42C9  jb   .mask
+42CB  cmp  al, 0x20
+42CD  mov  bx, 0xB3E6
+42D0  jb   .mask
+42D2  mov  bx, 0xB3D8
+42D5  or   al, 4
+.mask
+42D7  and  byte [bx], 0x80    ; keep only the top bit of whichever flag
+```
+
+`0xB3D8`, `0xB3E6` and `0xB3F4` are the same three bytes that get initialised
+to `1` at spawn alongside `[0x418D]`, the sound gate's comparison target (see
+[FLIGHT-MODEL.md](FLIGHT-MODEL.md)) — all five written from the same
+instruction block at `0xEEE0`-`0xEEE9`. What this routine does is mask one of
+the three, chosen by which sixteenth-wide bucket the random draw fell into,
+down to just its top bit — and better than a third of the time (96 in 256), it
+does nothing. What reads these three flags afterward is not yet found.
+
 ## Hot variables live inside instructions
 
 Before anything else in this region: **the program keeps its working state in
@@ -377,8 +512,15 @@ coordinates are arbitrary and get scaled at instancing time.
 - The rest of the aircraft state block. `[0x347B]` holding the frame delta as
   the high byte of a word means it is used as 8.8 fixed point, which is likely
   the format the whole model works in.
-- The other seventeen callees of `0xCC8C`.
+- Seven of `0xCC8C`'s eighteen callees are only previewed, not read:
+  `0x1F3A`, `0x314E`, `0x3160`, `0x3644`, `0x3F62`, `0x40A3`, `0x9811`.
+- Which structure `0xCFB3`'s CRC-16 actually protects, and what the
+  `0xCF81`/`0xCF5D` record codec pair's fields mean — both are mechanically
+  understood but not tied to game data yet.
+- What reads the three flags `0x42BD` masks (`0xB3D8`, `0xB3E6`, `0xB3F4`).
 - The thirteen state handlers, of which only the in-flight one has been looked
   at at all.
 - Two self-modified flags gate parts of the loop, at `0xEFE0` and `0xF26E`.
-  Both are written from `0xF288`. Whatever sets them decides which paths run.
+  `0xF288` writes both; `0xEFE0` is also set to `1` at spawn (`0xEEEC`, the
+  same block that arms the three `0x42BD` flags and the sound gate). Whatever
+  `0xF288` does thereafter still decides which paths run.
