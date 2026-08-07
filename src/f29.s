@@ -253,6 +253,7 @@ m_loop1a
 	dbra	d7,m_loop1a
 
 	bsr		hud_init
+	bsr		menu_init
 
 ; -----------------------------------------------------------------------------
 
@@ -264,6 +265,18 @@ m_loop2
 	tst.l	$466.w
 	beq.s	m_loop2
 
+	tst.b	menu_active
+	beq		.no_menu
+
+	bsr		menu_update
+	tst.b	menu_quit
+	bne		m_end
+
+	move.l	work_screen,a0
+	bsr		menu_draw
+	bra		.buffer_swap
+
+.no_menu
 	move.l	object,a0
 	addq	#6,a0
 	lea		mouse_x,a1
@@ -361,6 +374,7 @@ m_loop2
 	move	#4,d1
 	bsr		print_value
 
+.buffer_swap
 	move.l	work_screen,d0
 	move.l	display_screen,work_screen
 	move.l	d0,display_screen

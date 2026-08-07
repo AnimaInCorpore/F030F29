@@ -41,6 +41,7 @@ far is written up in `docs/`:
 |---|---|
 | [ENGINE.md](docs/ENGINE.md) | what is in `src/`, how to build it and how to check it |
 | [HUD.md](docs/HUD.md) | the flight HUD readout — units, placeholder data, verifying it |
+| [MENU.md](docs/MENU.md) | the start menu — font, navigation, verifying input headlessly |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the port divides work between the 68030 and the DSP |
 | [GAME-LOOP.md](docs/GAME-LOOP.md) | the per-frame update, the timing, the state variables |
 | [FLIGHT-MODEL.md](docs/FLIGHT-MODEL.md) | units, thrust against drag, the turn-rate table, ground handling |
@@ -131,8 +132,9 @@ The port itself has just started. The engine renders an F29 scene - a model
 library plus placed instances, culled and depth-sorted on the 68030, one DSP
 round trip each - over a drawn horizon at 320x240 true colour in Hatari,
 measured at **25 fps** for sixteen distant objects and **11.6 fps** for one
-that fills the screen. The flight model, game logic, HUD and menus are not
-written.
+that fills the screen. A HUD readout and a start menu exist (see
+[HUD.md](docs/HUD.md), [MENU.md](docs/MENU.md)); the flight model, game logic
+and cockpit panel are not written.
 
 Measuring rather than calculating already paid for itself once. The first
 bottleneck was not the video mode the arithmetic pointed at, but the fact that
