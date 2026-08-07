@@ -274,13 +274,68 @@ is negative whenever the aircraft is airborne: a large unsigned value means
 close to the ground, and the branch is taken when within 220 of it. Falling
 through means high.
 
-**The unit is not settled.** The manual quotes altitudes in feet, which would
-make one unit four feet. But the placement lists put objects at the same kind of
-values — 0, -10, -25, -50 — and models run 40 to 1300 units across, so a control
-tower 260 units tall would be over a thousand feet at four feet per unit. Either
-the altitude display is not in feet, or altitude and world geometry do not share
-a scale. Worth settling before the flight model is ported, since it decides what
-the physics constants mean.
+#### It is an instruction immediate too
+
+Like the airspeed. At `0x3981`:
+
+```
+3972  c7 46 0c c8 00   mov word ptr [bp+0x0c], 0xC8
+3977  c7 46 0e c8 00   mov word ptr [bp+0x0e], 0xC8
+397C  c7 46 10 c8 00   mov word ptr [bp+0x10], 0xC8
+3981  c7 46 12 c8 00   mov word ptr [bp+0x12], 0xC8
+                 ^^^^^ this immediate is 0x3984
+3986  c7 46 14 c8 00   mov word ptr [bp+0x14], 0xC8
+398B  c7 46 16 c8 00   mov word ptr [bp+0x16], 0xC8
+```
+
+The other init targets fall out of the same block: `0x3975`, `0x397F`, `0x3989`
+and `0x398E` are the immediates of the neighbouring instructions.
+
+#### World coordinates are 16.16 fixed point
+
+That block, and `0x40AF` which does the same thing with live values, writes a
+structure with fields at `+0x0C` through `+0x16` — **three 32-bit coordinates**:
+
+```
+40B7  mov  [bp+0x0e], ax     ; X high
+40BA  sub  ax, ax
+40BC  mov  [bp+0x0c], ax     ; X low, zero
+40BF  mov  [bp+0x12], bx     ; Y high  <- bx is [0x3984]
+40C2  mov  [bp+0x10], ax     ; Y low, zero
+40C5  mov  [bp+0x16], dx     ; Z high
+40C8  mov  [bp+0x14], ax     ; Z low, zero
+40D4  add  bp, 0x35          ; 53 bytes per entry
+40D7  cmp  bp, 0xF8E
+```
+
+The coordinate goes into the **high** word and the low word is cleared, so the
+world is 16.16 fixed point and `[0x3984]` is the integer part of the aircraft's
+Y. The same routine spawns entries into a 53-byte-per-entry table, so this is
+where objects are created at the aircraft's position — a weapon release or
+similar.
+
+#### The unit: four feet
+
+Aircraft altitude and world object coordinates go into the *same structure
+fields*, so they share a scale. With that, everything is consistent at **four
+feet per unit**:
+
+| Value | Display | What |
+|---:|---:|---|
+| -3000 | 11,920 | the starting altitude, set at `0x4E97` |
+| -75 | 220 | ground proximity test at `0x3F01` |
+| -20 | 0 | ground level, and the value `0x946C` compares against |
+
+The manual's numbers line up: it gives around 4,000 ft on approach and 300 to
+400 ft over the runway, against a mission start at 11,920 and a ground check at
+220.
+
+An earlier note left this open on the grounds that models run 40 to 1300 units
+across, so a 260-unit control tower would be over a thousand feet. **That
+objection was wrong**: it assumed model space and world space share a scale, and
+they do not. The original's own converter normalises every model to a fixed
+extent when building its object file, which is only sensible if model
+coordinates are arbitrary and get scaled at instancing time.
 
 ## State found so far
 
@@ -293,16 +348,13 @@ the physics constants mean.
 | `[0xF3A2]` | theatre | tested at `0xCC8C`, `0x438D`, `0x75FC` |
 | `[0xAE68]` | **airspeed**, eight per knot, 3200 = 400 kt at start | the immediate of `mov bx,imm` at `0xAE67`, written by the model at `0x5211`, displayed as `>> 3` |
 | `[0xA81E]` | **heading**, 2048 to the circle, starts at 1024 = due south | written each frame at `0x511E`, initialised at `0xEF06` |
-| `[0x3984]` | **vertical position**, negative upward, zero on the display at -20 | written at `0x4EA0`, ground test against -75 at `0x3F01` |
+| `[0x3984]` | **vertical position**, four feet per unit, negative upward, ground at -20, starts at -3000 | the immediate of `mov [bp+0x12],imm` at `0x3981`; written at `0x4EA0` |
+| `[0x398E]` | the paired horizontal coordinate | the immediate at `0x398B`, read alongside `[0x3984]` |
 | `[0xFF7E]` | flag word read by the aircraft update | |
 | `[0xFB3A]` | flag byte, bit 3 gates `0xB1B8` | |
 
 ## Open
 
-- The unit of `[0x3984]`. Feet would make it four per unit, but that conflicts
-  with model sizes if altitude and world geometry share a scale. This decides
-  what the physics constants mean, so it wants settling before the model is
-  ported.
 - The rest of the aircraft state block. `[0x347B]` holding the frame delta as
   the high byte of a word means it is used as 8.8 fixed point, which is likely
   the format the whole model works in.
