@@ -61,6 +61,7 @@ KNOWN_DATA = {
     0x143A: "sine table, 1024 words",
     0x2E8F: "keyboard tables",
     0x30A3: "copy-protection text",
+    0x802E: "status/message text pool",
     0x5485: "manoeuvre envelope, 10 x 8",
     0x54D5: "speed envelope, reference/minimum, 9 x 8",
     0x551D: "speed envelope, ceiling, 9 x 8",

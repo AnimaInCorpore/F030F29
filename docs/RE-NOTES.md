@@ -80,19 +80,25 @@ Because this dispatcher leads out of `X.EXE`, it cannot be resolved from here.
 
 Every target is documented in [`re/seeds.txt`](../re/seeds.txt) and read by
 `disasm.py` automatically. Together with the techniques described under
-"Widening the sweep" below, coverage went from **8.2 % to 44.6 %**, 2,601 to
-12,536 instructions, 102 to 346 call targets.
+"Widening the sweep" below, coverage went from **8.2 %** at the start of this
+work to whatever `disasm.py`'s own tail output currently reports — run it
+rather than trust a number here, since `re/seeds.txt` keeps growing. 51.8 %
+as of the object-callback and keyboard-table work.
 
 | Site | Kind | Resolution |
 |---|---|---|
-| `0xD2DA` | `call cs:[bx-0x2BC6]` | table at `0xD43A`, **7 entries**. Every handler tests `cs:[0xD5C8]` against 4 and works with `cx` = 0x2000/0x2880/0x0800/0x3C00 → **pixel format dispatcher** for CGA/Tandy/EGA/VGA, not a decompressor |
+| `0xD2DA` | `call cs:[bx-0x2BC6]` | table at `0xD43A`, **16 raw slots** (indices 7/14 and 8/15 repeat, so 14 unique). Every handler tests `cs:[0xD5C8]` against 4 and works with `cx` = 0x2000/0x2880/0x0800/0x3C00 → **pixel format dispatcher** for CGA/Tandy/EGA/VGA, not a decompressor. Three slots stay unresolved — see the note below the table |
 | `0xD2EE` | `jmp ax` | `mov ax,0xD329` immediately before — constant propagation |
-| `0x29D5` | `call [si]` | table at `0x29EF`, walked bit by bit through `AL`, so at most 8 entries — **subsystem init mask**. Bit 7 is `int 15h AX=C200`, the PS/2 mouse |
+| `0x29D5` | `call [si]` | **one** table at `0x29EF`, 16 entries — confirmed by reading the loop itself (`inc si` by 2 per one of 16 bit-tested iterations), not by guessing a length from where the values stop looking like code. An earlier pass misread this as two 8-entry tables ("forward" and "inverse"); the second half is simply where the same loop's index reaches, not a separate base. **Flag-change callback dispatcher**. Bit 7 is `int 15h AX=C200`, the PS/2 mouse |
 | `0x5B8C` | `jmp ax` | trampoline table running **backwards** from `0x5BE6`: code 9 lands on `0x5BE6`, code 0 on `0x5BD4` |
 | `0x5B92` | `jmp bp` | three glyph renderers: `0x58FB`, `0x5852`, `0x599A` |
 | `0xE4CC` | `jmp [bx]` | **menu dispatcher**, table inline after each call site. Three sites: `0xC564` (7), `0xD754` (8), `0xE680` (7) |
-| `0x8F26` | `call [bx-0x70C4]` | base `0x8F3C`, **4 entries** |
-| `0xF263` | `call [bx-0x5929]` | base `0xA6D7`, **13 entries**, index from `[0xA720]`. This is the game *state* dispatcher, one handler per state; the HUD is what one of them draws. See [GAME-LOOP.md](GAME-LOOP.md) |
+| `0x8F26` | `call [bx-0x70C4]` | base `0x8F3C`, table mixes code pointers and ASCII text ("...LEL DONE..."); unreached, entry point not established |
+| `0xF263` | `call [bx-0x5929]` | base `0xA6D7`, **13 code entries** (indices 0-12) indexed by `[0xA720]`. Index 13 (`0x5C58`) decodes as incoherent garbage on inspection, not a fourteenth state; indices 14-15 are a literal ASCII `"00"` and a `0x0000` null, plainly sentinels rather than table content. This is the game *state* dispatcher, one handler per state; the HUD is what one of them draws. See [GAME-LOOP.md](GAME-LOOP.md) |
+| `0x9E37` | `jmp [bx-0x5F45]` | **keyboard dispatch table** at `0xA0BB`, 64 entries, most defaulting to a no-op `ret`. A bounds check (`cmp bx,0x9FB9 / jb`) statically proves the table's live region rather than leaving it to guesswork |
+| `0x35BC` | `call [bp+0x49]` | **object virtual-method dispatch** — a game-object structure carries a callback pointer at `+0x49`, found by scanning for `mov [bp+0x49],imm16` across the image (4 targets). The same structure has two more callback slots, `+0x2C` (`call [bp+0x2C]` at `0x337F`, 3 targets) and `+0x7D` (1 target) |
+
+`0xD2DA`'s three unresolved slots, for anyone tempted to seed them later: index 7 (`0x802E`) is plausible-looking at a glance but is ASCII text ("...OVERWHELMED BY A MASSIVE...", a status-message pool, now in `KNOWN_DATA`); indices 9 and 11 (`0x04D5`, `0x04BA`) both open with byte `0xF1` (ICEBP — essentially never legitimate) followed by code that reads far more coherently starting one byte later, an off-by-one never resolved; index 10 (`0x0E76`) reaches an `out dx,al` with `dx` never set by anything nearby. None of the three are in `re/seeds.txt`.
 
 ### The menu dispatcher
 
@@ -272,6 +278,7 @@ against `cx = 0x30B` = 779 bytes, exactly the size of `RETAL.LOG`.
 |---|---|
 | `0x2E8F` | keyboard tables (`1234567890-=`, `qwertyuiop[]`, ...) |
 | `0x30A3` | copy protection: `PILOT AUTHORISATION`, `WHICH SECTOR DOES THIS ... CONCERN?` |
+| `0x802E` | status/message text pool (`...OVERWHELMED BY A MASSIVE...ONSLAUGHT...`) |
 | `0x5BEE` | token phrase pool |
 | `0x5CC0` | token table, indexed by character from 0x68 |
 | `0x5DEE` | mission select: `SCENARIO`, `FIRE AND FORGET`, `TEST RANGE`, `RED ARMY` |
@@ -294,9 +301,11 @@ Remaining indirect jumps, by leverage:
 | 35x `lcall [0xFC14]` | overlay | leads out of `X.EXE`; needs the overlay's own dispatch table |
 | `call bp` | dynamic | largely resolved by the register-pointer pass; the residue is `bp` values computed rather than loaded as constants |
 | 2x `jmp si` (`0x5B60`, `0x5B66`) | inline string | no fixed target — returns past the respective string. Handled correctly already, just not resolvable as a "target" |
-| 2x `call di` (`0x3393`, `0x33B3`) | dynamic | not analysed |
-| `call bx` (`0x9849`), `jmp bx` (`0x9E48`) | dynamic | not analysed |
-| `call [bp+0x2C]`, `call [bp+0x49]`, `call [bx+0xE]`, `jmp [bx+si+5]` | struct-relative | pointers out of data structures, need type analysis |
+| 2x `call di` (`0x3393`, `0x33B3`) | dynamic | resolved to two targets, `0x95CC` and `0x9619`, both short and coherent; what sets `di` before either call site is not traced |
+| `call bx` (`0x9849`) | dynamic | resolved — single target `0x9930`, see [GAME-LOOP.md](GAME-LOOP.md) |
+| `jmp bx` (`0x9E48`) | jump table | resolved — the keyboard dispatch table above |
+| `call [bp+0x2C]`, `call [bp+0x49]` | struct-relative | resolved — the object virtual-method dispatch above |
+| `call [bx+0xE]`, `jmp [bx+si+5]` | struct-relative | still open |
 
 Other:
 
