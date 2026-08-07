@@ -34,6 +34,16 @@ object *instancing* with a position. `0x451A`, which it calls per entry, clears
 is the walker for the 7-byte placement records and builds a lookup at
 `ss:[type*2]`.
 
+**Records can cross-reference each other.** `0x4490` (resource 11's loader)
+reads a source record's own fields at `+0x1C` and `+0x22`; when either is
+negative, it is a tagged index rather than a plain value, and the loader
+resolves it into the record's own just-assigned load address, written into a
+shared table at `0x2EB6`. A runtime scan (`0x9811` in
+[GAME-LOOP.md](GAME-LOOP.md)) reads the same table back to follow a loaded
+object's reference to another one. What the reference is *for* — attachment,
+tracking, a chain of some kind — is not established, only that the mechanism
+exists and where it lives.
+
 ## Format
 
 ```

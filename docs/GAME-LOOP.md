@@ -765,10 +765,66 @@ a budget that is spent down each time this is called, with the scan only
 running while it stays positive. The scan loop itself (`0x9848` onward) walks
 a structure via `es:[di+0x22]`, looks entries up in a table at `[si+0x2EB6]`,
 and calls the accumulator once per item, continuing while a running total
-(swapped through `[bp+0x2E]`) stays non-negative. This inner per-item lookup —
-resolving a reference through `[si+0x2EB6]` and conditionally rewriting the
-item's own `[bp+0x12]` (a Y-high world-coordinate field) from what it finds —
-is not fully worked out; what's certain below does not depend on it.
+(swapped through `[bp+0x2E]`) stays non-negative.
+
+**The per-item lookup at `0x9858` turns out to be a cross-reference resolver,
+and the table it reads is built at load time, not at runtime:**
+
+```
+9848  call bx                        ; the 0x9930 accumulator
+      mov  si, es:[di+0x22]            ; the current item's own reference field
+      not  si
+      shl  si, 1
+      jae  .9858                         ; negative field: resolve it (below)
+      jmp  .98DA                           ; non-negative: the type/counter tail
+
+.9858
+      mov  ax, si                        ; save the transformed field
+      and  si, 0x3FFF                      ; mask to an index
+      mov  si, [si + 0x2EB6]                 ; -> a loaded object's address
+      cmp  si, 1
+      jbe  .98DA                               ; 0 or 1: not a valid reference
+      mov  ds, es                                ; read through the resolved object
+      mov  dx, [si+0x20]
+      mov  [bp+0x2A], si                           ; cache the resolved pointer
+      ...                                             ; see below
+```
+
+`[si+0x2EB6]` is not read-only scratch — `0x4490`, the model-library loader for
+resource 11 (already documented in
+[MODEL-FORMAT.md](MODEL-FORMAT.md)), *writes* the same table while compacting
+a loaded library:
+
+```
+44AF  mov  bx, [si+0x1C]      ; a source record's own reference field
+      not  bx
+      shl  bx, 1
+      jb   .skip                 ; positive: no reference, nothing to record
+      cmp  cs:[bx+0x2EB6], 1
+      jb   .skip
+      mov  cs:[bx+0x2EB6], di       ; table[index] = this record's loaded address
+```
+
+and the same again for a second field at the source record's `+0x22` — the
+exact offset the scan loop's own top-level branch reads. **A record can carry
+a negative-encoded reference to another record in the same library, and the
+loader resolves those references into real addresses once, at load time,
+into a shared table; the scan reads that table back at runtime.** The encoding
+is the same "negative field = a tagged index, not a raw value" trick as the
+scan loop's own outer branch, applied one level down.
+
+What the scan does with a resolved reference: read the target's own `+0x18`
+field and, unless it is zero, store its negation into the *current* item's
+`[bp+0x12]` — a Y-high world-coordinate field. Failing that, it walks further
+into the target (`+0x12`, then an offset read from `+2` of wherever that
+lands) to a byte that must be at least 30, then scans that many 4-byte
+entries counting a run of zeros from the start; if every one of them is zero,
+`[bp+0x12]` is overwritten with the count instead. Both outcomes are
+conditional rewrites of the current item's vertical position, driven by
+something read out of whatever it references. What the `+0x18`/`+0x20`
+fields and the zero-run scan represent specifically is not pinned down
+further — an item can apparently inherit or compute its height from a linked
+object, which is as far as this goes.
 
 **At the end, the item gets filed into one of two lists — and the tables that
 land in turn are exactly what `0x993E`'s script tests.** `sub_0000_98E9` tries
