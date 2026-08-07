@@ -116,9 +116,60 @@ throughout the model.
 `[0xFF7E]`, producing a small integer. Discrete bands over a continuous value:
 gear and flap limits, or afterburner stages.
 
-Which quantity `[0xAE68]` holds is not yet established. The thresholds are in
-the low thousands, and the READ.ME says the aircraft cruises at 270 to 300 knots
-on approach, so a fixed-point airspeed is the obvious guess — but it is a guess.
+### `[0xAE68]` is the airspeed
+
+Established, from five independent uses across twenty accesses.
+
+**It is integrated into position.** At `0x5123`:
+
+```
+5123  mov  ax,[0x347B]      ; the word whose high byte is the frame delta
+5126  imul word ptr [0xAE68]
+512A  mov  cx, dx           ; keep the high word of the product
+512C  mov  ax,[di+0x143A]   ; a direction component
+5130  imul cx
+5132  add  ax, bp           ; accumulate into a 32-bit position
+5135  adc  dx, bp
+```
+
+Speed times time times direction, summed into a position. That alone settles
+what the quantity is.
+
+**Things are divided by it.** At `0x5000`:
+
+```
+5002  sar  dx,1 / rcr ax,1   ; a 32-bit value, halved
+5006  mov  cx,[0xAE68]
+500A  cmp  cx,0x7D0          ; floored at 2000
+5010  mov  cx,0x7D0
+5013  shl  cx,1 / shl cx,1   ; times four
+5017  idiv cx
+```
+
+Dividing by speed, with a floor so it cannot blow up at a standstill, is how a
+flight model scales control authority — the faster you go, the less angular
+change a given input buys per unit of distance.
+
+**It accelerates at a limited rate** toward a target, six units per frame delta,
+clamped against overshoot (`0x51F7`, quoted above).
+
+**It gates discrete bands** at `0x4EB6`, against 1936, 2080 and 2920 combined
+with flag bits.
+
+**It drives a low-speed animation.** At `0x94D6` it is clamped to 880, shifted
+right four and accumulated into a phase that wraps at 8 — a cycle whose rate
+follows speed, with a separate floor of 40 below which it stops. Ground roll,
+by the look of it: wheels or runway markings.
+
+It is initialised to `0x0C80`, 3200, at `0xEF92`.
+
+**The unit is not established.** The constants are consistent with a fixed-point
+airspeed — 3200 in flight, control authority floored at 2000, ground animation
+capped at 880 and stopping below 40 — and if 880 is near the 270 to 300 knots
+the READ.ME gives for an approach, one knot is roughly three units and the
+2920 band lands near 1000 knots. That is arithmetic on a guess, though, not a
+reading of the code. Pinning it down means finding where the value reaches the
+airspeed indicator, and none of the twenty accesses is that path.
 
 ## State found so far
 
@@ -129,14 +180,16 @@ on approach, so a fixed-point airspeed is the obvious guess — but it is a gues
 | `[0x6327]` | the timer's value last frame | |
 | `[0xA720]` | game state, 0..12 | indexes the table at `0xA6D7` |
 | `[0xF3A2]` | theatre | tested at `0xCC8C`, `0x438D`, `0x75FC` |
-| `[0xAE68]` | an aircraft quantity, rate-limited | written at `0x5211`, banded at `0x4EB6` |
+| `[0xAE68]` | **airspeed**, rate-limited, initialised to 3200 | integrated into position at `0x5126`, divided by at `0x5017` |
 | `[0xFF7E]` | flag word read by the aircraft update | |
 | `[0xFB3A]` | flag byte, bit 3 gates `0xB1B8` | |
 
 ## Open
 
-- What `[0xAE68]` actually is, and the rest of the aircraft state block. The
-  three readers of the frame delta are the way in.
+- The unit of `[0xAE68]`, which needs the path to the airspeed indicator.
+- The rest of the aircraft state block. `[0x347B]` holding the frame delta as
+  the high byte of a word means it is used as 8.8 fixed point, which is likely
+  the format the whole model works in.
 - The other seventeen callees of `0xCC8C`.
 - The thirteen state handlers, of which only the in-flight one has been looked
   at at all.
