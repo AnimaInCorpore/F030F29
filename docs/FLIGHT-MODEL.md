@@ -806,6 +806,94 @@ two limits, which is overspeed damage. Field A's deployed-not-critical state
 (`2` or `6`) lowers the reference speed in the energy routine below, which is
 what a high-lift device does.
 
+## The stall warning, and a shared sound gate
+
+`0x4EB6`'s last piece of body, right before `sub_0000_5260` begins, decides
+whether to sound an audio cue this frame:
+
+```
+5214  cmp  byte [0xA720], 0xC     ; last game state: skip the whole block
+5219  je   .done
+521B  mov  ah,[0xFB32]
+521F  test ah, 0x40               ; a master gate
+5222  je   .5244                  ; clear: no cue this frame
+5224  test byte [0xAF81], 8       ; the departure flag, set by the energy routine
+5229  mov  al, 0xE                ;   -> effect 14
+522B  jne  .fire
+522D  mov  al, 5                  ;   else, if [0xFB3A] bit 5 is set -> effect 5
+522F  test byte [0xFB3A], 0x20
+5234  jne  .fire
+5236  or   ah, ah                 ; the same [0xFB32], bit 7 this time
+5238  jns  .5244
+523A  test byte [0xFF7C], 2       ; device field B of the mirrored word
+523F  je   .5244
+.fire (5241)
+5241  call 0x4188
+```
+
+`[0xAF81]` bit 3 is exactly the departure flag the energy routine (`0x52FF`)
+sets when the aircraft can't hold the commanded g — so **effect 14 is the
+stall warning**, and this is the payoff for that earlier finding: the flag set
+in one routine is read by another to decide what to play. Effect 5 is a second,
+lower-priority cue gated on `[0xFB3A]` bit 5. The third path repeats whatever
+effect number was already in `al` from earlier in `0x4EB6` — not traced here —
+gated on `[0xFB32]` bit 7 (the same bit that gates the sticky "flying" flag at
+`0x4F14`) together with `[0xFF7C]` bit 1, the still-unidentified second device
+field.
+
+`0x4188` itself is a thin, shared gate in front of the sound driver, called
+from eleven sites across the image — most of them far outside the flight
+model and out of scope here:
+
+```
+sub_0000_4188:
+4188  push dx
+4189  mov  dl, 1
+418B  cmp  dl, 0        ; the comparison target, at 0x418D, is what varies
+418E  jne  .skip
+4190  mov  ah, 0x10      ; sound driver function 0x10
+4192  lcall [0xfc14]
+.skip (4196)
+4196  pop  dx
+4197  ret
+```
+
+The immediate at `0x418A` (`mov dl,1`) is never written anywhere in the
+disassembled image — `dl` really is always `1`. The gate is the *comparison*
+target at `0x418D`, which has exactly two writers: initialised to `1` at spawn
+(`0xEEE0`, in the same block that zeroes the aircraft's position and speed),
+and halved — `1` to `0` — at `0x424B`, immediately after one specific,
+unrelated call site fires (guarded by a negative `cl` and the game state not
+being the last one). Once that path has run once, `[0x418D]` stays `0` and
+every future call to `0x4188`, from any of the eleven sites, becomes a no-op:
+`push dx / cmp 1,0 / jne skip / pop dx / ret`. Nothing re-arms it within a
+flight. The other ten call sites do not touch `[0x418D]` themselves; they only
+fire while it still reads `1`.
+
+What `ah=0x10` actually does at the sound driver, and the effect numbers
+themselves (`5`, `14`, and the ones from the other call sites — `0x1A`, `0x12`,
+`0x11`, `0x1B` among them), is the audio back end, out of scope here as agreed.
+What matters for the flight model is now settled: the departure flag has a
+consumer, and it is a stall warning.
+
+Every path through the block, whether or not it fired a sound, rejoins at
+`0x5244` for one more thing — a cheap source of pseudo-randomness:
+
+```
+5244  mov  ax, 0
+5249  xor  ah,[0x397B]        ; the coarse byte of X
+524D  xor  al,[0x398F]        ; the coarse byte of Z
+5251  and  byte [0xFB3A], 0xFE
+5256  or   al, ah
+5258  jns  .done
+525A  or   byte [0xFB3A], 1
+```
+
+XOR-ing the high bytes of the aircraft's own X and Z position and keeping the
+sign gives `[0xFB3A]` bit 0 a value that changes unpredictably frame to frame,
+without a dedicated generator or seed — position already wanders chaotically
+enough at this resolution. What reads bit 0 is not yet found.
+
 ## Data regions proven so far
 
 All of these are in the disassembler's `KNOWN_DATA` guard, so no future attempt
@@ -828,6 +916,10 @@ converter reads them at build time on the user's machine.
   overspeed escalation and the spawn state have been found.
 - The exact scale of the energy term returned by the stall/departure routine —
   its structural role is established, but not a real-world climb rate.
-- `0x4188`, called from the model at `0x5241`, is a sound call —
-  `lcall [0xFC14]` with `ah=0x10` — gated by a patched immediate at `0x418A`
-  that doubles as the effect number and the on/off flag. Sound is deferred.
+- The sound driver's function `0x10` and effect numbers `5`/`14` themselves —
+  `0x4188`'s gating and its flight-model trigger are now settled, but the
+  audio back end stays deferred, as agreed.
+- The inherited `al` at `0x5241`'s third path (the `[0xFB32]` bit 7 /
+  `[0xFF7C]` bit 1 case) — not traced back to where it was last set.
+- What `[0xFF7C]` and `[0xFB32]` bit 6/bit 7 actually are, beyond "a gate the
+  sound trigger and the sticky flying flag both use".
