@@ -45,6 +45,7 @@ far is written up in `docs/`:
 | [GAME-LOOP.md](docs/GAME-LOOP.md) | the per-frame update, the timing, the state variables |
 | [FLIGHT-MODEL.md](docs/FLIGHT-MODEL.md) | units, thrust against drag, the turn-rate table, ground handling |
 | [X86DISASSEMBLE.md](docs/X86DISASSEMBLE.md) | how to go about disassembling a DOS binary, from what this one cost |
+| [RE-WORKFLOW.md](docs/RE-WORKFLOW.md) | picking this up cold — tools, the session workflow, patterns and traps |
 | [RE-NOTES.md](docs/RE-NOTES.md) | `X.EXE` memory layout, resolved indirect dispatchers, inline-string idiom |
 | [ARCHIVE-FORMAT.md](docs/ARCHIVE-FORMAT.md) | container format of `RETAL.00` / `RETAL.01` |
 | [RESOURCE-FORMATS.md](docs/RESOURCE-FORMATS.md) | RLE compression and the seven resource type handlers |
