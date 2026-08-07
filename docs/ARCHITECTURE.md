@@ -27,6 +27,13 @@ From `f030dsp3d/src/3d.asm` (2,591 lines), in pipeline order:
 The DSP therefore hands the 68030 **finished span lists**. The CPU does no
 geometry, no sorting, no clipping.
 
+The original DOS game, having no DSP, does the first and fifth of these on its
+8086: `0x1F3A` builds a 3x3 rotation matrix from three angles against the same
+kind of sin/cos table (verified numerically — orthonormal, determinant 1 for
+arbitrary angles), and `0x3160` sorts objects into a binary search tree keyed
+on position, a coarser whole-object counterpart to the DSP's per-face BSP.
+See [GAME-LOOP.md](GAME-LOOP.md).
+
 Memory layout (DSP SRAM, 32K words of 24 bit):
 
 ```

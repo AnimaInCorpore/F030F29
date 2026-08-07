@@ -103,7 +103,12 @@ contiguously reached instructions and dedupe the `call` targets inside.
 | `0x42BD` | random-bucketed selector over three spawn-time flags — see below |
 | `0x412C` | triggers `0x42A2` → `0x40AF`, the object-spawn-at-aircraft-position routine already known from the world-coordinate work above |
 | `0x4188` | the sound gate — see [FLIGHT-MODEL.md](FLIGHT-MODEL.md) |
-| `0x1F3A`, `0x314E`, `0x3160`, `0x3644`, `0x3F62`, `0x40A3`, `0x9811` | previewed only — first few instructions read, not yet worked out |
+| `0x1F3A` | builds a 3x3 rotation matrix from three angles, entirely on the CPU — see below |
+| `0x314E`, `0x3160` | a linked list fed into a binary search tree, sorted on object position — see below |
+| `0x3F62` | spawns a small cluster of objects around one position, then a proximity sound check — see below |
+| `0x40A3` | sound-driver query, and a squared-3D-distance proximity cue — see below |
+| `0x9811` | entry to a larger budget-limited scan with a callback, feeding into `0x314E`'s pipeline; not fully worked out |
+| `0x3644` | a thin setup wrapper into `sub_0000_3E6C`, outside the eighteen and not chased further |
 
 ### `0x1325` is the PRNG, and it is never reseeded
 
@@ -216,6 +221,168 @@ instruction block at `0xEEE0`-`0xEEE9`. What this routine does is mask one of
 the three, chosen by which sixteenth-wide bucket the random draw fell into,
 down to just its top bit — and better than a third of the time (96 in 256), it
 does nothing. What reads these three flags afterward is not yet found.
+
+### `0x1F3A`: a 3x3 rotation matrix, built on the 8086
+
+`0x1F3A` unpacks three angle-table offsets from the caller's stack frame and
+falls straight into `0x1F43` — no `ret` between them, so this is one routine
+in two parts:
+
+```
+1F3A  mov  bx, [bp+0x24]     ; three angle offsets, into the sin/cos tables
+1F3D  mov  di, [bp+0x26]     ;   from 0x143A/0x163A, exactly as in the flight model
+1F40  mov  si, [bp+0x28]
+1F43  mov  ax, [bx+0x163A]   ; c1 = cos(angle 1)
+      mov  es, ax             ;   stashed — this 8086 has no spare general register
+      ...
+```
+
+Twenty-six instructions of `imul` / `shl,rcl` / add-or-subtract pairs later,
+nine words land at `bp+0x35` through `bp+0x45`, each a sum of sin/cos products
+of the three angles — `s1*s2*s3 + c2*c3`, `-c1*s3`, `s1*c2*s3 - s2*c3`, and six
+more in that shape. Reconstructing the formulas and checking them numerically
+in Python settles what they are: for every angle triple tried, the resulting
+3x3 matrix is orthonormal to machine precision and has determinant exactly 1.
+**A full 3D rotation matrix, computed by the CPU, from three Euler-style
+angles**, matching the trig-table convention already established in the
+flight model.
+
+`f030dsp3d` — the DSP engine this port is built from — does exactly this job
+on the DSP56001 (`ARCHITECTURE.md`, "Rotation matrices"). This is the original
+game's own equivalent, done on the 8086 because it has no DSP: build the
+matrix once per object per frame from its stored orientation, ready for
+whatever transforms the vertices afterward. Called from five sites, two of
+them inside `0xCC8C` itself (`0xCDC9`, `0xCE80`); the other three are `0x3AF5`,
+`0x3D9E`, `0xEE2C`, not yet examined.
+
+### `0x314E` and `0x3160`: a linked list, sorted into a binary search tree
+
+`0x314E` walks a null-terminated linked list — read a pointer, and while it is
+non-zero, call `0x3160` on it and follow the node's first word as the next
+pointer:
+
+```
+314E  lodsw            ; ax = the list head, from the stream at si
+      or   ax, ax
+      je   .empty
+      mov  bp, ax
+.loop
+      call 0x3160
+      mov  bp, [bp]     ; follow the "next" link
+      or   bp, bp
+      jne  .loop
+```
+
+`0x3160` is a textbook **binary search tree insertion**, keyed on
+`[bp+0xE]` first and `[bp+0x16]` second:
+
+```
+3160  xor  ax, ax
+      mov  [bp+4], ax     ; zero the new node's two child pointers
+      mov  [bp+6], ax
+      mov  ax, [bp+0xE]   ; primary key
+      mov  dx, [bp+0x16]  ; secondary key
+      mov  bx, bp         ; bx = the new node
+      mov  cx, [si]       ; the tree's root pointer lives at si
+      or   cx, cx
+      jne  .descend
+      mov  [si], bp       ; empty tree: the new node becomes the root
+      ret
+.descend
+      mov  bp, cx                    ; bp = current node
+      cmp  ax, [bp+0xE]               ; compare primary keys
+      jg   .go_right
+      ; equal-or-less: descend left, or break the tie on the secondary key
+      ...
+```
+
+`[bp+0xE]` and `[bp+0x16]` are the same X-high and Z-high fields identified in
+the world-coordinate work above — this sorts objects into a tree **by
+position**, X first and Z as a tie-break. `ARCHITECTURE.md` documents the
+DSP's polygon-level BSP sort (`f030dsp3d`, "BSP sorting"); this is the
+original's coarser, CPU-side, whole-object counterpart, built incrementally
+with an ordinary BST rather than a proper BSP tree. `0x3160` is also called
+directly, outside the list walk, from `0x3B37`, `0x45F7` and `0xCE87`.
+
+### `0x3F62`: spawn a cluster, then check a proximity sound
+
+```
+3F62  cmp  ax, 0x3EE
+      je   .special            ; -> 0x3F9C, a second table-driven path, not fully chased
+      mov  cx, 8
+      mov  si, 0x406F           ; a table of 8 (X,Z) offset pairs
+      cmp  ax, 0x3F0
+      je   .spawn
+      cmp  ax, 0x3EF
+      je   .shorter
+      jmp  0x40A3                 ; anything else: straight to the proximity check below
+.shorter
+      mov  si, 0x4053              ; a different table
+      dec  cx                       ; 7 entries instead of 8
+.spawn (3F7E)
+      lodsw
+      add  ax, [bp+0xE]              ; object.X + table.X
+      mov  bx, [bp+0x12]              ; object.Y, unchanged
+      mov  dx, [si]
+      add  dx, [bp+0x16]               ; object.Z + table.Z
+      inc  si
+      inc  si
+      call 0x40AF                       ; spawn an object at that position
+      loop .spawn
+      jmp  0x4132                         ; then the proximity check, see below
+```
+
+Dispatches on a numeric code in `ax`. Two of the three cases walk a small
+fixed table of position offsets and spawn one object per entry around the
+caller's position via `0x40AF` — the same routine `0x412C` reaches, already
+tied to the world-coordinate work. Every path ends the same way: a tail call
+toward the proximity-sound check next.
+
+### `0x40A3`: a sound-driver query, and a distance-gated cue
+
+```
+40A3  call 0x4132       ; al = 0, falls through into 0x4134
+4132  sub  al, al
+4134  push ax
+      mov  dl, 1
+      mov  ah, 0x12      ; sound driver function 0x12: a query
+      lcall [0xfc14]
+      sub  al, 4
+      jne  .distance
+      call 0x4188         ; result was 4: play effect 0 through the sound gate
+.distance (4144)
+      mov  ax, [0x3259]    ; a second tracked position — not the aircraft's own
+      mov  bx, [0x326C]     ; (that's 0x397A/0x3984/0x398E)
+      mov  cx, [0x3261]
+      call 0x1383            ; squared 3D distance to the object at bp
+      pop  ax                 ; the caller's original al parameter
+      cmp  dh, 4
+      jae  .return              ; too far: nothing
+      ...                        ; else scale dx by al's low two bits (x1, x2, or x8)
+      cmp  dh, 2 / clamp
+      mov  al, 0xD              ; 13
+      sub  al, dh                ; effect = 13 - dh
+      mov  ah, 0x10               ; play it directly - not through the 0x4188 gate
+      lcall [0xfc14]
+```
+
+`0x1383` is a clean, self-contained squared-distance function:
+
+```
+1383  sub  ax, [bp+0xE]    ; dX = point.X - object.X
+      imul ax                ; dX^2
+      ...                     ; same for Y and Z, accumulated in dx:ax
+      ret                      ; returns dX^2 + dY^2 + dZ^2, no square root needed
+```
+
+Comparing squared distances instead of taking a square root is the standard
+trick, and it is exactly what this does. The point compared against —
+`[0x3259]`/`[0x326C]`/`[0x3261]` — is read from several other places too
+(`0x345F`, `0x41D4`, and three sites around `0xA183`), so it is some
+consistently-tracked position, just not the aircraft's own. The nearer that
+point is to the object at `bp` (in bands set by `dh`), the higher-priority the
+effect selected — a distance-gated audio cue, played directly rather than
+through the `0x4188` gate, scaled by a caller-supplied factor of 1, 2 or 8.
 
 ## Hot variables live inside instructions
 
@@ -512,12 +679,21 @@ coordinates are arbitrary and get scaled at instancing time.
 - The rest of the aircraft state block. `[0x347B]` holding the frame delta as
   the high byte of a word means it is used as 8.8 fixed point, which is likely
   the format the whole model works in.
-- Seven of `0xCC8C`'s eighteen callees are only previewed, not read:
-  `0x1F3A`, `0x314E`, `0x3160`, `0x3644`, `0x3F62`, `0x40A3`, `0x9811`.
+- All eighteen of `0xCC8C`'s direct callees are now read at some depth.
+  `0x3644` bottoms out in `sub_0000_3E6C`, outside that set, not chased.
+  `0x9811` bottoms out in a larger budget-limited scan (fields at `[bp+0x2E]`,
+  `[bp+0x30]`, `[bp+0x32]`, a callback at `0x9930`) that isn't fully worked
+  out; it eventually funnels into `0x314E`'s list-to-tree pipeline.
 - Which structure `0xCFB3`'s CRC-16 actually protects, and what the
   `0xCF81`/`0xCF5D` record codec pair's fields mean — both are mechanically
   understood but not tied to game data yet.
 - What reads the three flags `0x42BD` masks (`0xB3D8`, `0xB3E6`, `0xB3F4`).
+- What `[0x2E70]`-`[0x2E94]`, the small tables `0x3F62`'s special case and
+  `0x3644` read, actually hold, and what `[0x3259]`/`[0x326C]`/`[0x3261]`
+  (the second tracked position in the distance cue) represents.
+- The three other callers of `0x1F3A`'s rotation-matrix builder
+  (`0x3AF5`, `0x3D9E`, `0xEE2C`), and the three other direct callers of
+  `0x3160`'s tree insert (`0x3B37`, `0x45F7`, `0xCE87`).
 - The thirteen state handlers, of which only the in-flight one has been looked
   at at all.
 - Two self-modified flags gate parts of the loop, at `0xEFE0` and `0xF26E`.
