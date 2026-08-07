@@ -5,12 +5,13 @@
 	include "inc/gemdos.s"
 
 	global _main
-	global	work_screen, display_screen, screen
+	global	work_screen, display_screen, screen, scene_loaded
 
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 240
 
 MAX_MODEL_DATA_SIZE = $20000
+MAX_SCENE_SIZE = $60000
 
 	text
 
@@ -41,6 +42,21 @@ start
     Fclose  d7
 
 .no_object
+; The scene is what the game actually draws: a model library plus the instances
+; placed across the world.  Without it the loop falls back to the single object
+; above, which is how a model can still be checked in isolation.
+	Fopen   scene_filename,#0
+	move    d0,d7
+	bmi     .no_scene
+
+	Fread   d7,#MAX_SCENE_SIZE,scene_buffer
+	Fclose  d7
+
+	lea		scene_buffer,a0
+	bsr		scene_init
+	st		scene_loaded
+
+.no_scene
 	bsr		init
 
 	bsr		main
@@ -212,9 +228,16 @@ lod_filename
 model_filename
 	dc.b    'model.o3d',0
 
+scene_filename
+	dc.b    'scene.f29',0
+
 	even
 
 	bss
+
+scene_loaded
+	ds.b	1
+	even
 
 savssp
 	ds.l	1
@@ -258,5 +281,8 @@ screen
 
 model_data
 	ds.b	MAX_MODEL_DATA_SIZE
+
+scene_buffer
+	ds.b	MAX_SCENE_SIZE
 
 	end

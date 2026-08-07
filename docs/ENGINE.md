@@ -34,17 +34,32 @@ at two breakpoints, so the interval between them excludes startup.
 4 MB machine that matters as much as the frame rate.
 
 The reasoning that led here: copying reads 153,600 bytes and writes as many
-again, while drawing only writes. An earlier isolation run with the model
-disabled put the full-screen copy at roughly four VBLs a frame on its own,
-which capped everything near 12 fps before a polygon was drawn.
+again, while drawing only writes.
 
-The gain is smaller than halving the traffic would suggest, because the write
-side remains — 153,600 bytes still go out every frame — and each blitter run
-costs its own setup. Cutting that further means either not covering the whole
-screen, which a moving horizon makes awkward, or dropping to 8 bits per pixel,
-which halves the write traffic outright. That fallback is described in
-[ARCHITECTURE.md](ARCHITECTURE.md) and the rasterizer was structured to keep it
-a localised change.
+**A correction to an earlier claim.** An isolation run with the model disabled
+was used to put the full-screen copy at "roughly four VBLs a frame on its own".
+That number was wrong. It divided a frame count by an interval that had a
+startup offset estimated from a *different* build, and the estimate did not
+transfer. Later two-point measurements show a whole frame — horizon, sixteen
+objects and all — costing 2.00 VBLs, so the horizon cannot be costing three.
+Only the paired measurements in the table above are sound, because both ends
+come from the same build.
+
+The lesson is the same one as the VBL 250 grab: a measurement is only as good
+as the thing it is compared against.
+
+## Scene rendering
+
+| Scene | Frames, VBL 1500→3000 | VBLs/frame | fps |
+|---|---:|---:|---:|
+| one large model filling the screen | 348 | 4.31 | 11.6 |
+| sixteen small distant objects | 750 | 2.00 | **25.0** |
+
+Sixteen objects, each its own DSP round trip, run at more than twice the rate
+of one large one. **Fill cost dominates, not object count.** The DSP handles
+geometry for sixteen models in less time than the blitter takes to fill one
+screen-sized silhouette, which is a useful thing to know before optimising the
+wrong end.
 
 Caveat: this is Hatari, not hardware. It runs with `--cpu-exact` and
 `--compatible`, but Falcon bus contention and blitter timing are
@@ -65,6 +80,37 @@ longwords rather than sixteen words.
 
 `background`, `clear_screen`, `clear_screen2`, `clear_screen3` and
 `clear_screen4` are all gone with it — 142 lines removed.
+
+## The scene
+
+The engine inherited a one-object file: header, points, normals, polygons, one
+BSP tree. A flight simulator needs a library of models and a few hundred
+instances placed across the world, so `tools/re/scene2f29.py` builds a scene
+file and `src/scene.s` draws it.
+
+```bash
+python tools/re/scene2f29.py            # -> release/scene.f29
+```
+
+**The DSP is unchanged, and deliberately so.** It already transforms, clips,
+projects and BSP-sorts one object per call, and its memory is nowhere near
+large enough for a library of 299 models. The scene work therefore sits on the
+68030: select the instances in view, order them back to front, hand them to the
+DSP one at a time. The per-object BSP orders faces within an object, the
+distance sort orders the objects among themselves.
+
+Per frame `scene_render` culls to a 12,000-unit box and a ceiling of sixteen
+objects, sorts by squared horizontal distance — comparing squares avoids a root
+and orders identically — and then does one round trip each: send geometry and
+transform, take the span lists back, fill them.
+
+The camera start position is stored in the file, as the centroid of the
+instances. Without it the viewer begins at the origin, and since a theatre's
+scenery sits tens of thousands of units away the first render is an empty
+horizon — which is exactly what the first attempt produced.
+
+If `scene.f29` is absent the loop falls back to the inherited single-object
+path, which is still how one model gets looked at on its own.
 
 ## F29 models on the Falcon
 

@@ -68,6 +68,7 @@ All in `tools/re/`, Python 3 with [capstone](https://www.capstone-engine.org/):
 | `models.py` | parse the 3D model libraries |
 | `objects.py` | parse the world object placement lists |
 | `model2o3d.py` | convert an F29 model into the engine's `.o3d` format |
+| `scene2f29.py` | build a scene file from a model library and a placement list |
 
 `re/seeds.txt` records every resolved indirect jump target together with the
 evidence for it; `disasm.py` reads it automatically.
@@ -121,9 +122,12 @@ The reverse engineering is broad: the archive, the compression, the image,
 model and world formats and the sound driver are all decoded, and the
 disassembly reaches 44.6 % of `X.EXE`.
 
-The port itself has just started. The engine builds and renders a flat-shaded
-model over a drawn horizon at 320x240 true colour in Hatari, measured at
-**11.6 fps**; the flight model, game logic, HUD and menus are not written.
+The port itself has just started. The engine renders an F29 scene - a model
+library plus placed instances, culled and depth-sorted on the 68030, one DSP
+round trip each - over a drawn horizon at 320x240 true colour in Hatari,
+measured at **25 fps** for sixteen distant objects and **11.6 fps** for one
+that fills the screen. The flight model, game logic, HUD and menus are not
+written.
 
 Measuring rather than calculating already paid for itself once. The first
 bottleneck was not the video mode the arithmetic pointed at, but the fact that

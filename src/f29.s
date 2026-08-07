@@ -6,6 +6,9 @@
 ; exports
 ; -----------------------------------------------------------------------------
 	global main, cam_view, object
+	global receive_data, colour_table, buffer, sincos
+
+	global scene_render, scene_loaded, scene_visible_count
 
 ; -----------------------------------------------------------------------------
 	include "inc/colours.s"
@@ -266,6 +269,18 @@ m_loop2
 
 	bsr		move_camera
 
+	move.l	work_screen,a0
+	bsr		draw_horizon
+
+	tst.b	scene_loaded
+	beq		.single_object
+
+	bsr		scene_render
+	bra		.drawn
+
+; Fallback when no scene file is present: the inherited single-object path, kept
+; so one model can still be looked at on its own.
+.single_object
 	tst		receive_flag
 	beq		.skip_receive
 
@@ -281,14 +296,11 @@ m_loop2
 	lea		cam_view,a5
 	bsr		send_data
 
-;	move.l	work_screen,a0
-
-	move.l	work_screen,a0
-	bsr		draw_horizon
-
 	move.l	work_screen,a0
 	lea		buffer,a1
 	bsr		draw_poly_hc_l
+
+.drawn
 
 ; -----------------------------------------------------------------------------
 
