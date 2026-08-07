@@ -597,7 +597,7 @@ whatever transforms the vertices afterward. Called from five sites, two of
 them inside `0xCC8C` itself (`0xCDC9`, `0xCE80`); the other three are `0x3AF5`,
 `0x3D9E`, `0xEE2C`, not yet examined.
 
-### `0x314E` and `0x3160`: a linked list, sorted into a binary search tree
+### `0x314E` and `0x3160`: a linked list, sorted into a k-d tree
 
 `0x314E` walks a null-terminated linked list — read a pointer, and while it is
 non-zero, call `0x3160` on it and follow the node's first word as the next
@@ -615,36 +615,88 @@ pointer:
       jne  .loop
 ```
 
-`0x3160` is a textbook **binary search tree insertion**, keyed on
-`[bp+0xE]` first and `[bp+0x16]` second:
+`0x314E` has exactly one callee, `0x3160`, and it has none of its own — no
+`call` anywhere in its body, just compares and jumps. Read in full, it is not
+a compound-key BST with a tie-break as a first pass suggested — it is a
+textbook **2D k-d tree insertion**, alternating which axis it splits on by
+depth: `[bp+0xE]` (X) at even levels, `[bp+0x16]` (Z) at odd ones.
 
 ```
 3160  xor  ax, ax
       mov  [bp+4], ax     ; zero the new node's two child pointers
       mov  [bp+6], ax
-      mov  ax, [bp+0xE]   ; primary key
-      mov  dx, [bp+0x16]  ; secondary key
+      mov  ax, [bp+0xE]   ; X
+      mov  dx, [bp+0x16]  ; Z
       mov  bx, bp         ; bx = the new node
       mov  cx, [si]       ; the tree's root pointer lives at si
       or   cx, cx
-      jne  .descend
+      jne  .x_level
       mov  [si], bp       ; empty tree: the new node becomes the root
       ret
-.descend
-      mov  bp, cx                    ; bp = current node
-      cmp  ax, [bp+0xE]               ; compare primary keys
-      jg   .go_right
-      ; equal-or-less: descend left, or break the tie on the secondary key
-      ...
+
+.x_level (317E)                    ; split on X - entered with cx = the node
+      mov  bp, cx                     ;   to descend into
+      cmp  ax, [bp+0xE]
+      jg   .x_right                  ; new.X > node.X
+      mov  cx, [bp+4]                   ; else: node's left child
+      jcxz .insert_left                   ; none: insert here
+      ; else: falls into .z_level, cx already the child to descend into
+
+.x_right (319E)
+      mov  cx, [bp+6]                 ; node's right child
+      or   cx, cx
+      jne  .z_level                     ; has one: descend, split on Z
+      ; else: falls into .insert_right
+
+.z_level (318A)                    ; split on Z - entered with cx = the node
+      mov  bp, cx                     ;   to descend into
+      cmp  dx, [bp+0x16]
+      jg   .z_right                  ; new.Z > node.Z
+      mov  cx, [bp+4]                   ; else: node's left child
+      or   cx, cx
+      jne  .x_level                       ; has one: descend, split on X
+      ; else: falls into .insert_left
+
+.z_right (3179)
+      mov  cx, [bp+6]                 ; node's right child
+      jcxz .insert_right                ; none: insert as right child
+      ; else: falls into .x_level, cx already the child to descend into
+
+.insert_left (3198)
+      mov  [bp+4], bx
+      mov  bp, bx        ; restore bp = the inserted node (see below)
+      ret
+
+.insert_right (31A5)
+      mov  [bp+6], bx
+      mov  bp, bx        ; same restore
+      ret
 ```
 
+`.x_level` and `.z_level` both open with the same `mov bp,cx`, so every "has a
+child" arm above is really a fall-through into whichever entry comes next in
+memory, not a separate jump — the tree alternates the split axis simply by
+which of the two blocks it lands in. The two insert points are shared: all
+four "no child here" arms converge on the same two-instruction tail before the
+restore.
+
+That restore matters for the caller. `bp` gets reused as the tree-descent
+cursor throughout, so by the time a leaf is found it no longer holds the
+node being inserted — `bx` does (set once, at the very top, before any
+descent). Both insert points copy it back into `bp` before returning, which
+is what makes `0x314E`'s own `mov bp,[bp]` correct afterward: it reads the
+*inserted* node's own next-pointer to continue the list walk, not whatever
+`0x3160` was last examining internally.
+
 `[bp+0xE]` and `[bp+0x16]` are the same X-high and Z-high fields identified in
-the world-coordinate work above — this sorts objects into a tree **by
-position**, X first and Z as a tie-break. `ARCHITECTURE.md` documents the
-DSP's polygon-level BSP sort (`f030dsp3d`, "BSP sorting"); this is the
-original's coarser, CPU-side, whole-object counterpart, built incrementally
-with an ordinary BST rather than a proper BSP tree. `0x3160` is also called
-directly, outside the list walk, from `0x3B37`, `0x45F7` and `0xCE87`.
+the world-coordinate work above, so this partitions objects **spatially in
+two dimensions**, not by a primary-key-with-tie-break ordering — the
+difference matters, since a k-d tree answers "what's near this point"
+queries a compound-sort BST cannot. `ARCHITECTURE.md` documents the DSP's
+polygon-level BSP sort (`f030dsp3d`, "BSP sorting"); this is the original's
+coarser, CPU-side, whole-object counterpart, built incrementally rather than
+from a static partition. `0x3160` is also called directly, outside the list
+walk, from `0x3B37`, `0x45F7` and `0xCE87`.
 
 ### `0x3F62`: spawn a cluster, then check a proximity sound
 
