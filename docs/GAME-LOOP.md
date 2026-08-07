@@ -216,9 +216,71 @@ belong, ground roll animating below 110 knots and stopping at 5. The READ.ME's
 "maintain a speed of 270 to 300 knots" on approach sits exactly between the
 bands.
 
-The same routine identifies two more: `[0xA81E]` is the **heading** source,
-scaled by 11520 and wrapped to 0..359, and `[0x3984]` is the **altitude**
-source, displayed as `(-20 - value) * 4`.
+### `[0xA81E]` is the heading, 2048 to the circle
+
+```
+AE4C  mov  ax,[0xA81E]
+AE4F  mov  cx, 0x2D00      ; 11520
+AE52  mul  cx              ; dx:ax, keep the high word
+```
+
+`mul` by 11520 and taking the high word is a division by 65536/11520, and the
+constant is chosen so that **2048 units come out as exactly 360**:
+
+| Value | Degrees |
+|---:|---:|
+| 0 | 0 |
+| 256 | 45 |
+| 512 | 90 |
+| 1024 | 180 |
+| 1536 | 270 |
+| 2047 | 359 |
+
+So the heading is an 11-bit angle, 2048 to the full circle — the same
+representation the display-list interpreter uses, where the angle accumulator
+is masked with `and ah,7` to eleven bits.
+
+The `neg dx / add dx,0x168` that follows turns it into a compass bearing by
+computing `360 - degrees`, guarded by a `je` so that zero stays zero rather than
+becoming 360.
+
+`0xEF06` initialises it to `0x400` — **1024, due south**. The flight model
+rewrites it every frame at `0x511E`, immediately before using it to index the
+direction table for the position integration.
+
+### `[0x3984]` is the vertical position, negative upward
+
+Displayed as `(-20 - value) * 4`, so the axis points **down**: the aircraft is
+at a *negative* value when airborne, and the reading is zero at value -20.
+
+| Value | Displayed |
+|---:|---:|
+| -20 | 0 |
+| -40 | 80 |
+| -100 | 320 |
+| -500 | 1920 |
+| -2520 | 10000 |
+
+The flight model writes it at `0x4EA0` and swaps it at `0x5165`. A ground
+proximity test sits at `0x3F01`:
+
+```
+3F01  cmp  word ptr [0x3984], -0x4B     ; -75, so 220 on the display
+3F06  jae  0x3F5E
+```
+
+Note the *unsigned* `jae` on a signed quantity. It works only because the value
+is negative whenever the aircraft is airborne: a large unsigned value means
+close to the ground, and the branch is taken when within 220 of it. Falling
+through means high.
+
+**The unit is not settled.** The manual quotes altitudes in feet, which would
+make one unit four feet. But the placement lists put objects at the same kind of
+values — 0, -10, -25, -50 — and models run 40 to 1300 units across, so a control
+tower 260 units tall would be over a thousand feet at four feet per unit. Either
+the altitude display is not in feet, or altitude and world geometry do not share
+a scale. Worth settling before the flight model is ported, since it decides what
+the physics constants mean.
 
 ## State found so far
 
@@ -230,13 +292,17 @@ source, displayed as `(-20 - value) * 4`.
 | `[0xA720]` | game state, 0..12 | indexes the table at `0xA6D7` |
 | `[0xF3A2]` | theatre | tested at `0xCC8C`, `0x438D`, `0x75FC` |
 | `[0xAE68]` | **airspeed**, eight per knot, 3200 = 400 kt at start | the immediate of `mov bx,imm` at `0xAE67`, written by the model at `0x5211`, displayed as `>> 3` |
-| `[0xA81E]` | heading source | `0xAE4C`, scaled by 11520, wrapped to 0..359 |
-| `[0x3984]` | altitude source | `0xAE63`, displayed as `(-20 - value) * 4` |
+| `[0xA81E]` | **heading**, 2048 to the circle, starts at 1024 = due south | written each frame at `0x511E`, initialised at `0xEF06` |
+| `[0x3984]` | **vertical position**, negative upward, zero on the display at -20 | written at `0x4EA0`, ground test against -75 at `0x3F01` |
 | `[0xFF7E]` | flag word read by the aircraft update | |
 | `[0xFB3A]` | flag byte, bit 3 gates `0xB1B8` | |
 
 ## Open
 
+- The unit of `[0x3984]`. Feet would make it four per unit, but that conflicts
+  with model sizes if altitude and world geometry share a scale. This decides
+  what the physics constants mean, so it wants settling before the model is
+  ported.
 - The rest of the aircraft state block. `[0x347B]` holding the frame delta as
   the high byte of a word means it is used as 8.8 fixed point, which is likely
   the format the whole model works in.
