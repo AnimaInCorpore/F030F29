@@ -107,8 +107,8 @@ contiguously reached instructions and dedupe the `call` targets inside.
 | `0x314E`, `0x3160` | a linked list fed into a binary search tree, sorted on object position — see below |
 | `0x3F62` | spawns a small cluster of objects around one position, then a proximity sound check — see below |
 | `0x40A3` | sound-driver query, and a squared-3D-distance proximity cue — see below |
-| `0x9811` | entry to a larger budget-limited scan with a callback, feeding into `0x314E`'s pipeline; not fully worked out |
-| `0x3644` | a thin setup wrapper into `sub_0000_3E6C`, outside the eighteen and not chased further |
+| `0x9811` | a budget-limited scan that sums a field over a set of objects, then feeds `0x314E`'s pipeline — see below |
+| `0x3644` | pool-allocates a tagged, timestamped position marker and redirects a dangling-looking reference onto it — see below |
 
 ### `0x1325` is the PRNG, and it is never reseeded
 
@@ -383,6 +383,129 @@ consistently-tracked position, just not the aircraft's own. The nearer that
 point is to the object at `bp` (in bands set by `dh`), the higher-priority the
 effect selected — a distance-gated audio cue, played directly rather than
 through the `0x4188` gate, scaled by a caller-supplied factor of 1, 2 or 8.
+
+### `0x9811`: a budget-limited scan that sums a field, then hands off to `0x314E`
+
+```
+9811  mov  bx, 0x9930      ; bx = a function pointer - a genuine one, unlike
+      call 0x9824            ;   the register-indirect calls seeded so far
+      jae  .walk               ; ok: enter the scan (see below)
+      ret                        ; else: nothing to do
+```
+
+`bx` is never used as a jump-table base here — it is loaded once, unconditionally,
+and called directly at `0x9849` inside the scan loop below. That is a genuine
+function pointer, not a table dispatch, so it needed its own seed (`re/seeds.txt`)
+rather than the usual jump-table proof. Decoding the raw bytes at `0x9930`
+confirmed it before seeding: 14 sensible instructions ending in `ret`, and clean
+code beyond that too.
+
+**The callback, `0x9930`, is a running accumulator:**
+
+```
+9930  mov  ax, es:[di+0x1E]   ; a signed field from the current scan item
+      cdq                      ; sign-extend to 32 bit
+      add  [0xF5B2], ax         ; accumulate the low word
+      adc  [0xF5AC], dl          ; and the high byte, with carry
+      ret
+```
+
+`[0xF5B2]`/`[0xF5AC]` are zeroed together in the same spawn-init block as the
+sound gate and the three `0x42BD` flags (`0xEEF1`-`0xEEF4`) — so this is a
+**per-mission running sum**, rebuilt from zero at the start of each flight, one
+term contributed by each item the scan visits. What the summed field represents
+is not identified; a mission-long tally is consistent with score, remaining
+ordnance, or a kill count.
+
+**`0x9824`** gates entry on `[bp+0x32]` bit 6 and the sign of `[bp+0x2E]`, then
+subtracts a per-call amount from `[bp+0x2E]` before allowing the scan to run —
+a budget that is spent down each time this is called, with the scan only
+running while it stays positive. The scan loop itself (`0x9848` onward) walks
+a structure via `es:[di+0x22]`, looks entries up in a table at `[si+0x2EB6]`,
+and calls the accumulator once per item, continuing while a running total
+(swapped through `[bp+0x2E]`) stays non-negative.
+
+At the end (`0x98A9` onward), once the budget or the scan is exhausted,
+`sub_0000_98E9` checks whether the scan reached its end (`cmp si,di`) and, if
+not, calls `sub_0000_98F2` (not traced) before setting the departure marker CF.
+On success, the same `si=0x2E66 / [si+2]=0 / call 0x314E` sequence closes it
+out — this scan's results are handed to the same list-to-BST pipeline `0x314E`
+serves elsewhere, sorted into the same position-keyed tree as everything else
+that pipeline touches.
+
+### `0x3644`: a pooled, timestamped position marker that steals a reference
+
+```
+3644  mov  bx, [0x2E94]        ; head of a linked list, searched below
+      mov  cx, [0xFADC]          ; a theatre-dependent value...
+      jne  .have_it
+      mov  cx, [0xFADE]            ; ...or its fallback if the first is zero
+.have_it
+      mov  di, bp                   ; di = the CALLER's own record pointer
+      mov  si, 0x2EAA                 ; head of a free-list pool
+      sub  dx, dx                      ; dx = 0
+      call 0x3E6C
+```
+
+`0x3E6C` opens with `call 0x30FA`, a **free-list pop**:
+
+```
+30FA  mov  ax, [si]      ; si = 0x2EAA, the pool's free-list head
+      or   ax, ax
+      je   .empty          ; nothing available: abort the whole operation
+      mov  bp, ax            ; bp = the popped record
+      xchg [si+2], ax          ; the usual head/tail free-list bookkeeping
+      xchg [bp], ax
+      mov  [si], ax
+```
+
+With a record in hand, `0x3E6C` initialises it — a magic tag, a
+theatre-dependent value, and a **deadline**:
+
+```
+3E71  mov  [bp+0x2C], 0xBB8B    ; a tag - this record is a marker, not the
+                                  ;   original object
+3E76  mov  [bp+0x2A], cx          ; the theatre-dependent value from 0x3644
+3E79  mov  ax, [0xF895]            ; the free-running timer
+3E7C  inc  ah                       ; + 256
+3E7E  mov  [bp+0x33], ax              ; -> a deadline, ~256 ticks out
+```
+
+— then copies the **caller's own position** into the new record, six words
+(the X/Y/Z coordinate pair fields at `+0xC` through `+0x17`, the same ones
+identified in the world-coordinate work) straight across:
+
+```
+3E87  mov  ax, di            ; di = the caller's record (saved by 0x3644)
+3E89  lea  si, [di+0xC]
+3E8C  lea  di, [bp+0xC]
+3E8F  mov  cx, 6
+3E92  rep  movsw               ; copy all three 32-bit coordinates
+```
+
+Finally, it walks the list at `[0x2E94]` looking for a node whose `+0x58`
+field points at the *caller's* record and whose `+0x30` field is non-zero,
+and when found, **retargets that node's `+0x58` to the new marker instead**:
+
+```
+3E98  cmp  [bx+0x58], ax    ; does this node reference the caller?
+      je   .check
+      mov  bx, [bx]           ; else follow the list
+      jne  .loop
+.check
+      cmp  [bx+0x30], dx        ; dx = 0: only redirect if this field is set
+      je   .next
+      mov  [bx+0x58], bp          ; redirect the reference to the new marker
+```
+
+Read together: something elsewhere holds a reference to the calling object by
+its record pointer. `0x3644` gives that reference a small, independent,
+tagged, self-expiring stand-in — a copy of the position, nothing else — and
+retargets the reference onto it. That is the shape of "the object this was
+tracking is going away; keep pointing at where it last was for a while
+instead of a pointer that is about to dangle." What specifically triggers this
+(what caller sits at `0xCD7C` inside `0xCC8C`, and which subsystem holds the
+`+0x58` reference) has not been traced.
 
 ## Hot variables live inside instructions
 
@@ -679,18 +802,23 @@ coordinates are arbitrary and get scaled at instancing time.
 - The rest of the aircraft state block. `[0x347B]` holding the frame delta as
   the high byte of a word means it is used as 8.8 fixed point, which is likely
   the format the whole model works in.
-- All eighteen of `0xCC8C`'s direct callees are now read at some depth.
-  `0x3644` bottoms out in `sub_0000_3E6C`, outside that set, not chased.
-  `0x9811` bottoms out in a larger budget-limited scan (fields at `[bp+0x2E]`,
-  `[bp+0x30]`, `[bp+0x32]`, a callback at `0x9930`) that isn't fully worked
-  out; it eventually funnels into `0x314E`'s list-to-tree pipeline.
+- All eighteen of `0xCC8C`'s direct callees are now read, `0x9811` and
+  `0x3644` included. What remains: what `0x9930`'s summed field (`es:[di+0x1E]`)
+  represents; `sub_0000_98F2` (reached from `0x98E9`, not traced); which
+  subsystem holds the `+0x58` reference that `0x3644` redirects, and what
+  calls it from `0xCD7C`.
 - Which structure `0xCFB3`'s CRC-16 actually protects, and what the
   `0xCF81`/`0xCF5D` record codec pair's fields mean — both are mechanically
   understood but not tied to game data yet.
 - What reads the three flags `0x42BD` masks (`0xB3D8`, `0xB3E6`, `0xB3F4`).
-- What `[0x2E70]`-`[0x2E94]`, the small tables `0x3F62`'s special case and
-  `0x3644` read, actually hold, and what `[0x3259]`/`[0x326C]`/`[0x3261]`
-  (the second tracked position in the distance cue) represents.
+- What `[0x2E70]`-`[0x2E94]`, the small tables `0x3F62`'s special case reads,
+  actually hold, and what `[0x3259]`/`[0x326C]`/`[0x3261]` (the second tracked
+  position in the distance cue) represents.
+- `sub_0000_993E`, found in passing right next to the seeded `0x9930` and
+  unrelated to it: a per-theatre byte-stream command interpreter (table at
+  `0x9C84`, indexed like `0x75FC`) with four opcode classes, called from four
+  sites (`0xC83E`, `0xF116`, `0xF2B0`, `0xF58D`) that have nothing to do with
+  `0xCC8C`. Not decoded beyond its shape.
 - The three other callers of `0x1F3A`'s rotation-matrix builder
   (`0x3AF5`, `0x3D9E`, `0xEE2C`), and the three other direct callers of
   `0x3160`'s tree insert (`0x3B37`, `0x45F7`, `0xCE87`).

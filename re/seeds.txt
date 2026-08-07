@@ -140,3 +140,13 @@
 # lcall [0xFC14], 35 sites
 #   Points out of X.EXE into a loaded overlay, see docs/ARCHIVE-FORMAT.md.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# call bx at 0000:9849, inside the 0x9811 scan loop called from 0xCC8C.
+# bx is loaded from a single, unconditional `mov bx,0x9930` at 0000:9811 -
+# not a table, a plain function pointer. Confirmed by decoding the raw bytes
+# at 0x9930 directly: 14 sensible instructions ending in `ret`, immediately
+# followed by more clean code (a per-theatre table lookup at 0x9C84, mirroring
+# the one at 0x75FC documented in RE-NOTES.md). See docs/GAME-LOOP.md.
+# ---------------------------------------------------------------------------
+0000:9930
