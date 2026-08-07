@@ -163,13 +163,62 @@ by the look of it: wheels or runway markings.
 
 It is initialised to `0x0C80`, 3200, at `0xEF92`.
 
-**The unit is not established.** The constants are consistent with a fixed-point
-airspeed — 3200 in flight, control authority floored at 2000, ground animation
-capped at 880 and stopping below 40 — and if 880 is near the 270 to 300 knots
-the READ.ME gives for an approach, one knot is roughly three units and the
-2920 band lands near 1000 knots. That is arithmetic on a guess, though, not a
-reading of the code. Pinning it down means finding where the value reaches the
-airspeed indicator, and none of the twenty accesses is that path.
+### The unit: eight per knot
+
+`0xAE68` is not a variable at all. It is the **immediate operand of an
+instruction**, and that is why searching for readers of it found none that
+displayed anything.
+
+The instrument routine at `0xAE4C` supplies three numbers, printed by `0x58B6`
+at three screen positions:
+
+```
+AE4C  mov  ax,[0xA81E]     ; heading source
+AE4F  mov  cx, 0x2D00
+AE52  mul  cx
+AE54  or   dx, dx
+AE56  je   .keep
+AE58  neg  dx
+AE5A  add  dx, 0x168       ;   wrapped into 0..359
+.keep
+AE5E  mov  si, dx          ; -> printed at 0xC8, degrees
+AE60  mov  ax, 0xFFEC      ; -20
+AE63  sub  ax,[0x3984]     ; altitude source
+AE67  mov  bx, 0           ; <- the immediate here IS 0xAE68
+AE6A  shr  bx, 1
+AE6C  shr  bx, 1
+AE6E  shr  bx, 1           ; -> printed at 0x20, speed / 8
+AE70  shl  ax, 1
+AE72  shl  ax, 1           ; -> printed at 0x7C, altitude * 4
+AE74  ret
+```
+
+`mov bx, 0` at `0xAE67` assembles as `bb 00 00`, so its immediate occupies
+`0xAE68` and `0xAE69`. The flight model's `mov [0xAE68], ax` at `0x5211` writes
+the speed straight into the instruction that will load it. The instrument
+routine then shifts right three and prints it.
+
+**So the display is `speed / 8`, and the internal unit is eight per knot.**
+Every constant falls into place:
+
+| Internal | Displayed | What it is |
+|---:|---:|---|
+| 3200 | **400 kt** | initial speed |
+| 2920 | 365 kt | top band |
+| 2080 | 260 kt | middle band |
+| 2000 | 250 kt | floor for control authority |
+| 1936 | 242 kt | bottom band |
+| 880 | 110 kt | ground animation cap |
+| 40 | 5 kt | below this the ground animation stops |
+
+400 knots to start, bands in the 240 to 365 range where gear and flap limits
+belong, ground roll animating below 110 knots and stopping at 5. The READ.ME's
+"maintain a speed of 270 to 300 knots" on approach sits exactly between the
+bands.
+
+The same routine identifies two more: `[0xA81E]` is the **heading** source,
+scaled by 11520 and wrapped to 0..359, and `[0x3984]` is the **altitude**
+source, displayed as `(-20 - value) * 4`.
 
 ## State found so far
 
@@ -180,13 +229,14 @@ airspeed indicator, and none of the twenty accesses is that path.
 | `[0x6327]` | the timer's value last frame | |
 | `[0xA720]` | game state, 0..12 | indexes the table at `0xA6D7` |
 | `[0xF3A2]` | theatre | tested at `0xCC8C`, `0x438D`, `0x75FC` |
-| `[0xAE68]` | **airspeed**, rate-limited, initialised to 3200 | integrated into position at `0x5126`, divided by at `0x5017` |
+| `[0xAE68]` | **airspeed**, eight per knot, 3200 = 400 kt at start | the immediate of `mov bx,imm` at `0xAE67`, written by the model at `0x5211`, displayed as `>> 3` |
+| `[0xA81E]` | heading source | `0xAE4C`, scaled by 11520, wrapped to 0..359 |
+| `[0x3984]` | altitude source | `0xAE63`, displayed as `(-20 - value) * 4` |
 | `[0xFF7E]` | flag word read by the aircraft update | |
 | `[0xFB3A]` | flag byte, bit 3 gates `0xB1B8` | |
 
 ## Open
 
-- The unit of `[0xAE68]`, which needs the path to the airspeed indicator.
 - The rest of the aircraft state block. `[0x347B]` holding the frame delta as
   the high byte of a word means it is used as 8.8 fixed point, which is likely
   the format the whole model works in.

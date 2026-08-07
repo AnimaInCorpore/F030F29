@@ -134,6 +134,14 @@ Check whether a table you are about to trust is written to: scan for every
 `mov [imm16], reg` and `mov word [imm16], imm` targeting its range. Finding none
 is worth knowing.
 
+And the converse: **an address written to may not be a variable at all.** The
+aircraft's airspeed appeared to live at `0xAE68`, written by the flight model
+and read in twenty places, yet nothing ever displayed it. `0xAE68` is the
+immediate of a `mov bx, imm` at `0xAE67` inside the instrument routine — the
+model writes the speed into the instruction that will load it. When a variable
+has writers and readers but no plausible consumer, check whether its address
+lands inside an instruction.
+
 **Signed versus unsigned comparisons.** `cmp al,0x41 / jl` is *signed*, so
 values from `0x80` up take the low branch too. Reading it as unsigned sent me
 looking for a second dispatch table that does not exist. When a dispatcher seems
