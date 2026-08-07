@@ -28,6 +28,12 @@ except ImportError:
 # past the terminator (a byte with bit 7 set).  See re/seeds.txt.
 INLINE_STRING_ROUTINES = (0x5B4C, 0x5B51, 0x5B56, 0x5B62)
 
+# Routines that consume a FIXED-length record placed inline after the call
+# site, rather than a terminator-scanned string.  0x6680 does `pop si / lodsw
+# / lodsw / lodsb / lodsw` - a 2+2+1+2 = 7 byte record - before continuing.
+# See docs/GAME-LOOP.md, the state-handler section.
+INLINE_RECORD_ROUTINES = {0x6680: 7}
+
 TERMINATORS = {"ret", "retf", "iret", "iretd", "jmp", "ljmp", "hlt"}
 UNCONDITIONAL = {"jmp", "ljmp"}
 CONDITIONAL = {
@@ -105,8 +111,9 @@ class Disassembler:
         self.indirect = []                  # (Addr, mnemonic, op_str)
         self.interrupts = defaultdict(set)
         self.far_refs = set()               # far pointers seen as immediates
-        self.strings = {}                   # start Addr -> end Addr of inline strings
+        self.strings = {}                   # start Addr -> end Addr of inline strings/records
         self.inline_string_routines = {Addr(0, o) for o in INLINE_STRING_ROUTINES}
+        self.inline_record_routines = {Addr(0, o): n for o, n in INLINE_RECORD_ROUTINES.items()}
 
     def _read(self, addr: Addr, n: int = 16) -> bytes:
         return self.image[addr.linear:addr.linear + n]
@@ -162,6 +169,12 @@ class Disassembler:
                         nxt = end
                     else:
                         break
+                # Same idiom, but the callee consumes a fixed-length record
+                # instead of scanning for a terminator.
+                elif mnem == "call" and target in self.inline_record_routines:
+                    end = Addr(nxt.seg, nxt.off + self.inline_record_routines[target])
+                    self.strings[nxt] = end
+                    nxt = end
                 addr = nxt
 
     def reset(self) -> None:

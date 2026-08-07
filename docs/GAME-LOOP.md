@@ -70,17 +70,194 @@ flight model.
 **`[0xA720]` is the state variable.** It indexes the 13-entry table at `0xA6D7`
 — resolved earlier as `call [bx-0x5929]` — so there are thirteen states, each
 with its own per-frame handler. It is also compared against `0x0C` in several
-places, consistent with twelve being the last valid state.
+places, consistent with twelve being the last valid state. Reading the table
+directly from the file (rather than trusting `re/seeds.txt`'s discovery-order
+listing) gives the handler for each index in order:
 
-One of those handlers draws the in-flight HUD; its labels are inline strings, so
-`ALTITUDE` sits at `0xA8FC` immediately after a `call 0x5B4C`. An earlier note
-called the whole table "the HUD dispatcher" — it is the state dispatcher, and
-the HUD is what one state happens to draw.
+```
+state   0   1   2   3   4   5   6   7   8   9  10  11  12
+addr  A9BC A93B AE09 AE09 ADD3 ADE7 ADC2 ADF7 AD98 ADB0 A979 A95A A8F9
+```
+
+States 2 and 3 share `0xAE09` — worth noting before reading anything else,
+since it means one of the thirteen slots is trivially a no-op (`ret`, nothing
+else). Twelve routines to account for, not thirteen.
+
+Once read, these turn out to be **view/display-mode handlers, not mission
+phases**: state 12, examined earlier, draws the in-flight HUD (`ALTITUDE` sits
+at `0xA8FC`, an inline string after `call 0x5B4C`); the rest split between a
+shared chain of camera-view labels and a pair of instrument-panel layouts. See
+below for all twelve.
 
 `[0xF3A2]` is a second, independent selector: the theatre. `0xCC8C` tests it
 against `0x62` at its first instruction, the placement-list walker at `0x438D`
 uses it to choose a group, and `0x75FC` indexes a per-theatre parameter table
 with it. Three routines found separately all key off the same byte.
+
+## The twelve state handlers
+
+### A second inline-data idiom, and a disassembler fix
+
+States 0, 1, 10 and 11 all call `sub_0000_6680`, and every call site was
+garbage past that point — `pop ax`, nonsense `add`/`and` sequences, an `fdivr`
+in the middle of what should be code. The same trap as the inline strings
+documented in [X86DISASSEMBLE.md](X86DISASSEMBLE.md), but a different shape:
+
+```
+6680  pop  si          ; the return address, taken as a data pointer
+6681  lodsw / mov dx,ax     ; word 1
+6684  lodsw                  ; word 2
+6685  mov  bl, ah / xor ah,ah / mov di,ax   ;   split: bl = high byte, di = low byte
+668B  lodsb / mov bp,ax        ; byte 3
+668E  lodsw / push si / mov si,ax  ; word 4, old si saved for later
+```
+
+Five fields, `2+2+1+2 = 7` bytes, no terminator to scan for — a **fixed-length
+record**, not a string. `tools/re/disasm.py` only knew how to skip
+terminator-scanned strings (`INLINE_STRING_ROUTINES`), so it decoded these 7
+bytes as instructions at every one of `0x6680`'s call sites and derailed. Added
+a second table, `INLINE_RECORD_ROUTINES = {0x6680: 7}`, and a matching branch
+in the descent loop that skips a fixed count instead of scanning. Coverage
+went from 44.6% to **45.7%** in one pass, entirely previously-mislabelled
+code, not new guessing — the data guard still holds (13 regions, all
+untouched).
+
+With the records read correctly, `0x6680` decodes each one as
+`(dx, di, bl, bp, si)` and, past a branch on whether `bp` is odd or even,
+programs the VGA/EGA Graphics Controller and Sequencer directly (`out` to
+ports `0x3CE`/`0x3CF`/`0x3C4`/`0x3C5` — index/data pairs for the bit mask and
+map mask registers) before a masked `movsb` blit from a bitmap at
+`[0xFC22]:si` — `[0xFC22]` is the seventh entry of the nine-word segment table
+documented in `RE-NOTES.md`. This is a **hardware-level icon/glyph plotter**:
+`dx` reads as a screen coordinate, `si` selects which bitmap, `bp`/`bl`/`di`
+some mix of size and placement. What each field means precisely, and what the
+bitmaps themselves look like, is not chased further — the values are game
+data and stay out of this repository regardless.
+
+### States 0 and 10: the cockpit instrument panel, live and on a second page
+
+State 0 (`sub_0000_A995`) draws three icons via `0x6680` at `dx = 88, 64, 40`
+(likely three stacked screen rows), then two gauge bars:
+
+```
+AA24  mov  si, 5
+      mov  ax, [0xB43A]     ; the throttle
+      mov  cx, 0x32          ; scale: 50
+      call 0xAA45
+      mov  si, 6
+      mov  ax, [0xB444]       ; a second gauge source, not yet identified
+      mov  cx, 0x320            ; scale: 800
+      call 0xAA45
+```
+
+`[0xB43A]` is the throttle, already established in
+[FLIGHT-MODEL.md](FLIGHT-MODEL.md) — 0..500, so a scale of 50 covers it in
+round tenths. `[0xB444]`'s scale of 800 doesn't match anything documented yet.
+`0xAA45` itself (the bar-drawing primitive) is not traced.
+
+State 10 is a thin wrapper around the *same* routine:
+
+```
+A979  mov  ax, [0xC34]       ; the current video segment/page
+      push ax                 ; save it
+      add  ax, 0xD2             ; offset to a second page
+      cmp  byte [0xD5C8], 4      ; adapter-class check (CGA/Tandy/EGA/VGA)
+      jne  .skip
+      add  ax, 0                  ; adapter-specific adjustment, self-modified
+.skip
+      mov  [0xC34], ax              ; swap to the alternate page
+      call 0xA995                     ; draw the SAME panel there
+      pop  [0xC34]                      ; restore the original page
+      ret
+```
+
+State 10 draws the identical instrument panel to a second video page instead
+of the visible one. A back buffer for a smooth page-flip, or a picture-in-
+picture / satellite-view surface rendered off-screen — which, is not settled;
+either is consistent with what's here.
+
+### States 1 and 11: a mirrored pair of gauge clusters
+
+Both call `0x6680` three times and return — no gauges, no fall-through into
+anything else. Decoding all six records side by side:
+
+```
+state  1: dx=88 di=0x02 ...   dx=64 di=0x23 ...   dx=40 di=0x42 ...
+state 11: dx=88 di=0x5A ...   dx=64 di=0x7B ...   dx=40 di=0x9A ...
+```
+
+Every field is identical between the two states **except `di`, offset by
+exactly `0x58` (88) in every entry**. Same three icons, same rows (`dx`),
+shifted sideways by a fixed 88 pixels — a left/right pair of identical
+three-icon gauge clusters, not two different displays.
+
+### States 4-9: one shared view-mode label chain
+
+`0xAD98` (state 8) through `0xAE09` (states 2/3's no-op) is a single linear
+sequence with no internal jumps back to a common dispatcher — six labelled
+calls to `sub_0000_AE0A` in a row, falling straight through from one to the
+next:
+
+```
+state  8 enters here -> "SATELLITE VIEW"
+                         "BEHIND MISSILE"
+state  9 enters here -> (same as above, from BEHIND MISSILE)
+state  6 enters here -> "LOOKING NORTH"
+state  4 enters here -> "FULL SCREEN VIEW"
+state  5 enters here -> "BEHIND PLANE"
+state  7 enters here -> "LOOKING SOUTH"  (state 7 is the only one that
+                                           reaches just this single label)
+```
+
+Six view modes, six labels, one shared trailer of code reused via six
+different entry points — a normal size-saving trick in hand-written assembly,
+and the reason states 4 through 9 looked like six near-duplicate blocks before
+reading them side by side.
+
+One label was garbage in the listing — `0xADE7`'s content showed as a single
+`\x80` byte followed by nonsense, because the string's own *first* byte
+happens to be `0x80`, which the terminator scan (any byte with bit 7 set)
+reads as an immediate empty string. Reading the raw bytes directly settles it:
+`\x80BEHIND PLANE\xC5` — a leading marker byte per label (`|` for the two
+"VIEW"/"MISSILE" entries, `~` for the two "LOOKING" entries, `x` for "FULL
+SCREEN VIEW", `0x80` here), then the text, terminated on the last letter with
+its high bit set as usual (`E`+0x80 = `0xC5`). This one call site's resume
+point is a manual correction; the disassembler's generic terminator scan has
+no way to know a leading marker byte can itself look like a terminator, and
+this is the only place in the image where that collision happens.
+
+`sub_0000_AE0A` does more than print the label. After it, gated by the same
+call, every entry in the chain also draws the **full flight instrument
+readout** — the same heading/airspeed/altitude routine (`0xAE4C`) and the same
+three-position print (`0x58B6`) already documented for state 12's HUD:
+
+```
+AE0A  test byte [0xFB3E], 0xFF    ; a blink/flash gate
+      jne  .skip                    ;   nonzero: skip this frame entirely
+      call 0x5B4C                     ; print the label (inline text, see above)
+      pop  si
+      call 0x5BE6
+      call 0x5B6E
+      call 0xAE4C                       ; heading / altitude / airspeed - see FLIGHT-MODEL.md
+      ... three calls to 0x58B6 ...       ; print each at its screen column
+.skip (AE08)
+      pop  si
+      ret
+```
+
+`[0xFB3E]` has exactly one writer in the image, a bare `not byte [0xFB3E]` at
+`0x9DE4` — a toggle, consistent with a blink cadence flipping the flag between
+all-zero and all-one on some other timer. What exactly happens on the
+"skipped" path — whether `pop si; ret` correctly resumes past the caller's own
+trailing label text, or whether the real resume mechanism lives deeper in the
+`0x58B6`/`0x58CB` print chain reached by the *previous* frame's successful
+draw — was not fully traced. The label text and the shared HUD tail are solid;
+the exact blink-skip control flow is flagged open below.
+
+So states 4-9 are six camera/view modes that all show the same flight
+instruments underneath a different mode label - consistent with the READ.ME's
+external-view descriptions, and with states 0/10/1/11 being cockpit-panel
+and gauge-cluster views rather than anything narrative.
 
 ## `0xCC8C`, the way into the game code
 
@@ -822,8 +999,16 @@ coordinates are arbitrary and get scaled at instancing time.
 - The three other callers of `0x1F3A`'s rotation-matrix builder
   (`0x3AF5`, `0x3D9E`, `0xEE2C`), and the three other direct callers of
   `0x3160`'s tree insert (`0x3B37`, `0x45F7`, `0xCE87`).
-- The thirteen state handlers, of which only the in-flight one has been looked
-  at at all.
+- All thirteen state handlers are now read at some depth. Still open within
+  them: `0xAA45` (the gauge-bar primitive states 0/10 use), `0x0A72` (called
+  by states 0/8/10), what `[0xB444]` is, `0x6703` (the odd-`bp` branch of the
+  icon blitter `0x6680`), and the exact control flow of `0xAE0A`'s blink-skip
+  path (does `pop si; ret` at `0xAE08` correctly resume the caller past its
+  trailing label, or does that depend on the `0x58B6`/`0x58CB` print chain
+  from a prior frame — not traced).
+- What triggers a transition between the thirteen states — `[0xA720]` is
+  written in several places not yet examined, so what makes the player cycle
+  through view modes (a key binding, most likely) is still open.
 - Two self-modified flags gate parts of the loop, at `0xEFE0` and `0xF26E`.
   `0xF288` writes both; `0xEFE0` is also set to `1` at spawn (`0xEEEC`, the
   same block that arms the three `0x42BD` flags and the sound gate). Whatever
