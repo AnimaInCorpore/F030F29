@@ -131,12 +131,28 @@ the vertex order, every face is back-facing and the model is invisible bar the
 odd stray polygon — the first render was an empty horizon with a single white
 speck. Reversing them is therefore the default; `--keep-winding` turns it off.
 
-**Line primitives do not render.** The `0x1C` face marker means two corners,
-which is a line, and the flat-shaded filler has nothing to fill — a two-corner
-face has no area. Across the four libraries that is 397 of 3,593 faces, and 27
-of 299 models are mostly lines; those come out as a thin streak. Runway
-markings and antennae are the likely subjects. Drawing them needs a line
-routine the engine does not have.
+**Line primitives, fixed at conversion time, not in the renderer.** The
+`0x1C` face marker means two corners, which is a line, and the flat-shaded
+filler has nothing to fill — a two-corner face has no area, so it fills zero
+pixels at every scanline. Across the four libraries that is 397 of 3,593
+faces, and 27 of 299 models are mostly lines; those came out as a thin,
+broken streak. Runway markings and antennae are the likely subjects.
+
+The "obvious" fix — teach `draw_poly_hc_l` or the DSP's edge-table builder
+about zero-width spans — was set aside for a safer one. The DSP side in
+particular is dense, unfamiliar fixed-point code with no fast way to test a
+change, and a mistake there risks every polygon, not just lines. Instead
+`model2o3d.py` and `scene2f29.py` widen each 2-corner face into a thin quad
+at conversion time (`line_to_quad`, `build_faces`) — perpendicular to the
+segment, extruded a small fraction of the model's extent. The existing,
+proven pipeline renders it like any other flat polygon; no DSP or 68030
+renderer change was needed. `--no-line-quads` reproduces the old, invisible
+behaviour for comparison.
+
+The trade-off is the standard one for faking thin geometry without true line
+rasterisation: a quad this thin still vanishes viewed exactly edge-on. A real
+DSP-side line primitive remains open if that ever matters enough to justify
+the risk.
 
 ## Files
 

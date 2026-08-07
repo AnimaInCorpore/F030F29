@@ -68,31 +68,19 @@ LIBRARIES = [("re/unpacked/RETAL_01_08_t0.raw", 0),
              ("re/unpacked/RETAL_01_11_t0.raw", 0)]
 
 
-def model_body(model, flip=True):
+def model_body(model, flip=True, line_quads=True):
     """Points, normals and polygons for one model, in DSP order."""
-    verts = model["verts"]
-    faces = []
-    for colour, refs in model["faces"]:
-        centre, normal = model2o3d.face_geometry(verts, refs)
-        if flip:
-            normal = (-normal[0], -normal[1], -normal[2])
-        faces.append(model2o3d.Face(refs, colour if colour is not None else 7,
-                                    centre, normal))
+    verts = list(model["verts"])
 
-    if len(faces) > 1:
-        ordered = []
-        model2o3d.tree_order(model2o3d.build_bsp(list(faces), verts), ordered)
-    else:
-        ordered = faces
+    span = max(max(v[i] for v in verts) - min(v[i] for v in verts) for i in range(3))
+    half_width = span * model2o3d.LINE_WIDTH_FRACTION / 2 if span else 1.0
 
-    offset = 0
-    for face in ordered:
-        face.offset = offset
-        offset += face.word_size()
+    ordered, line_count = model2o3d.build_faces(verts, model["faces"], half_width,
+                                                flip, line_quads)
 
     out = bytearray()
     for x, y, z in verts:
-        out += struct.pack(">lll", x, y, z)
+        out += struct.pack(">lll", round(x), round(y), round(z))
     for face in ordered:
         for component in face.normal:
             out += struct.pack(">L",
@@ -108,8 +96,8 @@ def model_body(model, flip=True):
             out += struct.pack(">H", ref * 3)
 
     radius = max((max(abs(c) for c in v) for v in verts), default=1)
-    radius = max(radius, 1)
-    return bytes(out), len(verts), len(ordered), radius
+    radius = round(max(radius, 1))
+    return bytes(out), len(verts), len(ordered), radius, line_count
 
 
 def main() -> None:
@@ -120,6 +108,8 @@ def main() -> None:
                     help="which group of the placement list to use; group 0 is "
                          "the theatre's static scenery")
     ap.add_argument("--max-instances", type=int, default=256)
+    ap.add_argument("--no-line-quads", action="store_true",
+                    help="see model2o3d.py --no-line-quads")
     ap.add_argument("-o", "--out", default="release/scene.f29")
     args = ap.parse_args()
 
@@ -143,10 +133,12 @@ def main() -> None:
     # type to library index is not established yet either way.
     bodies, directory, blob = [], bytearray(), bytearray()
     offset = HEADER_SIZE
+    total_lines = 0
     for model in library:
-        body, points, polys, radius = model_body(model)
+        body, points, polys, radius, line_count = model_body(model, line_quads=not args.no_line_quads)
         bodies.append((body, points, polys, radius))
         blob += body
+        total_lines += line_count
 
     for body, points, polys, radius in bodies:
         directory += struct.pack(">LLHHHH", offset, len(body), points, polys,
@@ -179,6 +171,9 @@ def main() -> None:
     print(f"  directory       {len(directory)} bytes at {directory_offset:#x}")
     print(f"  instances       {len(instances)} bytes at {instance_offset:#x}")
     print(f"  camera start    ({cam_x}, -400, {cam_z})")
+    if total_lines:
+        note = "widened into quads" if not args.no_line_quads else "left degenerate"
+        print(f"  {total_lines} 2-corner lines across the library, {note}")
     print(f"wrote {args.out}, {len(out)} bytes")
 
 
