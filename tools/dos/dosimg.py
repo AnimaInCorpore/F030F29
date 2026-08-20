@@ -163,7 +163,11 @@ class DosImage:
                 sys.exit(f'missing genuine DOS floppy: {img}')
             # Destination must be '.' with cwd set: mtools reads a trailing
             # `C:\...` argument as a *drive letter* ("Drive 'C:' not supported").
-            run('mcopy', '-m', '-o', '-i', img,
+            # `-o` only covers clashes on the DOS side; overwriting an existing
+            # *host* file needs `-n`, or a rebuild over a populated staging dir
+            # stops on `File "./IO.SYS" exists, overwrite (y/n) ?` and blocks
+            # forever waiting on a tty that isn't there.
+            run('mcopy', '-m', '-o', '-n', '-i', img,
                 *[f'::{n}' for n in names], '.', cwd=self.dosf)
 
     def _mcopy(self, dest, files):

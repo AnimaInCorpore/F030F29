@@ -95,10 +95,36 @@ appears to hang.
 Timings are wall-clock and will drift with host load; prefer `--shot` at several
 points over betting on one exact instant.
 
+## Reading the running program
+
+`tools/dos/gdbstub_probe.py` (shared verbatim, see below) samples the *running*
+original over QMP: registers, an EIP histogram symbolicated against a Ghidra
+export, a RAM↔file residency check, and `sendkey` to drive the game. It needs no
+adaptation here — it already resolves `img/f29.hdd`,
+`assets/extracted/F29Retal/Retal/X.EXE` and a Ghidra skew of `0xFE00`, and
+correctly reports that `X.EXE` has no Borland overlay pool (it is hand-written
+assembly).
+
+Two uses specific to this project:
+
+- **Rank the 132 unreached regions by whether they actually execute.** An EIP
+  histogram over a real play sequence turns "statically unreachable" into
+  "unreached *and* never observed" — a much stronger statement — and any hit
+  inside one is a seed with evidence attached, in the spirit of `re/seeds.txt`.
+- **Watch out for the ISR.** In UW1 the single hottest address in every game
+  state was a timer interrupt handler that the static analysis had never
+  disassembled, because it is only reachable through a vector installed at run
+  time. Exclude it before concluding anything about the main loop.
+
+QMP, not GDB, on purpose: QEMU's gdbstub accepts the connection and then drops
+commands intermittently on this Windows build. See `docs/CROSS-PROJECT.md` §6.
+
 ## How the image is built
 
-`tools/dos/dosimg.py` is shared verbatim with the sibling projects
-(F030Underworld, F030Underworld2, F030TIE). It builds the filesystem with
+`tools/dos/dosimg.py`, `run_qemu.py`, `mbr.asm` and `gdbstub_probe.py` are shared
+verbatim with the sibling projects (`C:\Arbeit\F030Underworld`,
+`C:\Arbeit\F030Underworld2`, `C:\Arbeit\TIE`) — keep the four copies in sync;
+only `build_dos_hdd.py` differs per game. `dosimg.py` builds the filesystem with
 mtools and installs the **genuine** MS-DOS 6.22 boot record, keeping only its
 BPB replaced. Five invariants are asserted at build time, each of which was a
 real failure first in the sibling projects:

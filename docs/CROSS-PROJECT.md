@@ -5,9 +5,9 @@ Atari Falcon030:
 
 | Project | Game | Binary shape |
 |---|---|---|
-| `C:\Arbeit\F030Underworld` (UW1) | Ultima Underworld (1992) | 16-bit MZ, Borland TC++ 1990, 562 KB + self-loaded tail |
-| `C:\Arbeit\F030Underworld2` (UW2) | Ultima Underworld 2 (1993) | same engine family |
-| `C:\Temp\TIE` (TIE) | TIE Fighter CD (1995) | DOS4G/LE hybrid, 16-bit half + 1 MB 32-bit image |
+| `C:\Arbeit\F030Underworld` (UW1) | Ultima Underworld (1992) | 16-bit MZ, Borland TC++ 1990, 562 KB + 141 KB `FBOV` overlay pool |
+| `C:\Arbeit\F030Underworld2` (UW2) | Ultima Underworld 2 (1993) | same engine family, 676 KB + 210 KB `FBOV` overlay pool |
+| `C:\Arbeit\TIE` (TIE) | TIE Fighter CD (1995) | DOS4G/LE hybrid, 16-bit half + 1 MB 32-bit image |
 | `C:\Arbeit\F030F29` (F29) | F29 Retaliator (1990) | 68 KB hand-written 16-bit real mode |
 
 They hit the same problems in different orders. This document collects the
@@ -79,6 +79,32 @@ so post-scripts must be Java. *(UW1 `ghidra.md`.)*
 **The syscall-naming payoff is grep.** Once `DosSyscallAnalyzer` has run you can
 grep the disassembly for `DosCreateFile`/`DosRead`/`DosSeek` to find the I/O core
 instead of reading raw `int 21` sequences. *(UW1 `ghidra.md` §5.)*
+
+**A tail past `e_cp` is a question, not a fact — check for `FBOV` first.** Both
+UW1 and UW2 carry a large region that the DOS loader does not map (UW1: 141 KB
+past file 0x66B30; UW2: 210 KB past 0x71B80), and both projects assumed for
+months that the program self-loads it contiguously at run time. It does not.
+The first four bytes are `FBOV`, Borland's **overlay pool** magic:
+
+```
+66B30: 46 42 4f 56 | 10 27 02 00 | 60 d8 05 00 | 9f 00 00 00
+       "FBOV"        ovrsize       exeinfo       segnum
+```
+
+with `ovrsize == pool size - 16` exactly — check that and the reading is
+certain. UW1 has 159 overlay segments, UW2 has 174; calls into them go through
+`INT 3Fh` thunks (UW1: 667, UW2: 1,006, all inside the mapped image), and the
+manager's `Runtime overlay error` string is in both binaries. Consequences:
+
+- **There is no single tail→memory mapping to find.** Overlays are swapped into
+  a buffer, so the same file bytes appear at different addresses at different
+  times — UW1 caught two overlays live at deltas `-0xBCA1` and `-0x8F50`.
+- A runtime address inside the pool will still "resolve" to a pool function
+  name, because the functions tile the region densely. That is not evidence;
+  match the *bytes* at CS:IP back into the file instead.
+- Reassembly must reproduce the pool, its segment count and every thunk site.
+
+*(UW1 `uwexe.md` §13.3, measured on the running game; UW2 verified in-file.)*
 
 ## 2. Idioms that derail a disassembler
 
@@ -213,9 +239,9 @@ convention.)*
 
 All four projects now carry an identical harness that boots genuine MS-DOS 6.22
 in QEMU and runs the original game headless. Shared verbatim:
-`dosimg.py`, `run_qemu.py`, `mbr.asm`; per-game: `build_dos_hdd.py`,
-`set_boot_mode.py`. Each project's own `qemu-boot.md` / `DOS-ORACLE.md` has the
-details.
+`dosimg.py`, `run_qemu.py`, `mbr.asm`, `gdbstub_probe.py`; per-game:
+`build_dos_hdd.py`, `set_boot_mode.py`. Each project's own `qemu-boot.md` /
+`DOS-ORACLE.md` has the details.
 
 Why it matters for reverse engineering: questions that static analysis cannot
 settle — a self-loaded tail's runtime base, a segment/pool base register, which
@@ -235,6 +261,41 @@ Three techniques inside it generalise beyond DOS:
   serial sink is a no-op (TIE accumulated 22 empty `serial*.log` files before
   this was believed). What works: files the guest writes, read back with mtools;
   QMP `screendump`; and `pmemsave 0xB8000` decoded as 80×25 text.
+
+### Probing the running game (`gdbstub_probe.py`)
+
+Booting is half of it; reading the running program is the other half. The shared
+probe does that over **QMP `human-monitor-command`** — QEMU's raw gdbstub was
+tried first and drops commands intermittently on this Windows build. It is
+game-agnostic: it finds the project root, the image (via the `.geom.json`
+sidecar), the largest MZ binary in the game tree, the Ghidra skew (from
+`e_cparhdr`) and the overlay pool (from `FBOV`) by itself. Pass `--exe` when the
+heuristic picks the wrong binary — in TIE it finds the installer-compressed
+`Z_TIE__.EXE`.
+
+What it does, and the lesson behind each:
+
+- **Calibrate `file → linear` from signatures in RAM.** Several candidate
+  16-byte windows, not one: a window that looks fine statically can have been
+  overwritten by the time you look, and a single auto-picked window did exactly
+  that on the first attempt. Skip windows containing a **relocation** (parse the
+  MZ reloc table) — the loader has patched those bytes — and take a majority
+  vote. UW1: 6 of 8 agree on `+0x2760`, giving load segment 0x0596.
+- **A 16-byte match proves 16 bytes.** Then check the *whole* file against RAM,
+  16 B every 4 KB. This is the step that overturned UW1's tail model: 1 of 35
+  windows of the "self-loaded tail" was resident, the rest zeros. Expect
+  ~70–75 % matches in the mapped image; the misses are applied relocations, and
+  seeing `push 0x55E1` in the file as `push 0x5B77` in RAM (`0x55E1 + 0x596`) is
+  a free confirmation of the load segment.
+- **The hottest address is probably an interrupt handler.** UW1's EIP histogram
+  is dominated in every game state by a 16-slot timer dispatcher at file
+  0x24A2A that Ghidra never disassembled — it is reachable only through a vector
+  installed at run time. `SS == CS` with a small `SP` is the tell. Exclude it
+  before drawing conclusions about "the game loop".
+- **Drive the game with `sendkey`, and screenshot every step.** UW1: 3× `esc`
+  walks title → intro → main menu, and the 4th quits to DOS, so `QUIT.COM` ends
+  the run and the monitor socket closing mid-probe is a *normal* outcome. Without
+  a screenshot per step you cannot say which state a histogram measured.
 
 **A wrong result from a check is sometimes a measurement bug, not a code bug.**
 An F29 frame grabbed too early shows the TOS desktop, not the program; a frame
@@ -261,6 +322,37 @@ what it claims to. *(F29 `RE-WORKFLOW.md` Traps.)*
 - **`mtype`/`mcat` on a missing file dump the raw image** and look like content.
   Always check the exit status. *(TIE.)*
 
+### Flags and offsets that silently change the answer
+
+The expensive bugs in this project family are not crashes. They are settings
+that produce a *well-formed, plausible, wrong* result, which then gets written
+into a doc and believed. All four of these were live at once in UW1:
+
+- **`ndisasm -u` is a synonym for `-b 32`** and silently overrides an earlier
+  `-b 16`. A 16-bit program decoded as 32-bit yields real-looking instructions:
+  `cmp al,[ss:bx+di]` becomes `cmp al,[ss:ecx]`, and a `call far` swallows the
+  next instruction. UW1's "the string pool is at segment 0x19A0" finding came
+  from exactly this and survived in the docs until the boot trace contradicted
+  it. Use `ndisasm -b 16 -o <linear>` and nothing else. Related: with an origin
+  above 64 KB, branch targets print truncated to 16 bits.
+- **Ghidra's image base is not `0x10000 + file offset`.** The MZ *header* is not
+  mapped, so the skew is `0x10000 - e_cparhdr*16` (UW1 0xCE00, UW2 0xD200, F29
+  0xFE00). The obvious formula is wrong by the header size and names every
+  address with a real function that is simply the wrong one. Derive the skew
+  from the header and check it against a known string before trusting a name.
+- **A name that resolves is not evidence.** Densely tiled function tables (an
+  overlay pool, an auto-analysed blob) return a plausible `FUN_xxx+0y` for any
+  address you hand them, including addresses that are not in that region at all.
+- **`mcopy -o` only covers clashes on the DOS side.** Overwriting an existing
+  *host* file needs `-n`; without it a rebuild over a populated staging
+  directory stops on `File "./IO.SYS" exists, overwrite (y/n) ?` and blocks
+  forever on a tty that does not exist. Fixed in the shared `dosimg.py`.
+- **QEMU prints `ES =1234`, with a space before the `=`**, and calls the flags
+  register `EFL`. Parsing `info registers` by splitting on whitespace and
+  requiring `=` in the token silently drops *every segment register* and reports
+  `CS=DS=ES=SS=0000`; every linear address computed from that is then wrong, and
+  looks merely odd rather than obviously broken.
+
 ---
 
 ## What to adopt here (F29)
@@ -285,7 +377,15 @@ can take from the siblings is tooling and bookkeeping.
    answer to the 132 unreached regions: indirect targets that static seeding
    cannot justify can be observed being taken. It also gives the port a
    reference to diff against — the same screen from the original and from
-   Hatari, side by side.
+   Hatari, side by side. `tools/dos/gdbstub_probe.py` is the reading half of it,
+   and needs no adaptation: on this project it already resolves `img/f29.hdd`,
+   `assets/extracted/F29Retal/Retal/X.EXE` and a Ghidra skew of `0xFE00`
+   (`X.EXE` has no `FBOV` pool — it is hand-written assembly, as expected). An
+   EIP histogram over the running original is a cheap way to rank which of the
+   132 regions actually execute.
+5. **The skew trap applies here too** (§7): `0x10000 + file offset` is wrong for
+   `X.EXE` by its 0x200-byte header. Anywhere the docs quote a Ghidra address,
+   the conversion should be stated, not assumed.
 4. **`seeds.txt` deserves a sibling for data.** The evidence-carrying seed file
    is F29's best bookkeeping idea; the same treatment for *proven-data* regions
    (currently constants inside `disasm.py`) would let the guard list be reviewed
