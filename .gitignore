@@ -21,3 +21,14 @@ re/listings/
 *.ini
 *-dbg.txt
 frame.bin
+
+# DOS oracle (docs/DOS-ORACLE.md): the built disk image embeds the game, and the
+# img/ tree holds the genuine MS-DOS 6.22 floppies. Neither belongs in the repo
+# under the no-game-data rule above; both are rebuilt by
+#   python tools/dos/build_dos_hdd.py
+img/
+build/img_build/
+build/qemu_out/
+
+# Tool scratch
+.pi/

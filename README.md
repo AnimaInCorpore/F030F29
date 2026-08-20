@@ -45,8 +45,10 @@ far is written up in `docs/`:
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the port divides work between the 68030 and the DSP |
 | [GAME-LOOP.md](docs/GAME-LOOP.md) | the per-frame update, the timing, the state variables |
 | [FLIGHT-MODEL.md](docs/FLIGHT-MODEL.md) | units, thrust against drag, the turn-rate table, ground handling |
+| [DOS-ORACLE.md](docs/DOS-ORACLE.md) | running the *original* DOS game headless in QEMU, to check the port against |
 | [X86DISASSEMBLE.md](docs/X86DISASSEMBLE.md) | how to go about disassembling a DOS binary, from what this one cost |
 | [RE-WORKFLOW.md](docs/RE-WORKFLOW.md) | picking this up cold — tools, the session workflow, patterns and traps |
+| [CROSS-PROJECT.md](docs/CROSS-PROJECT.md) | techniques shared with the sibling Falcon030 ports (UW1, UW2, TIE Fighter) |
 | [RE-NOTES.md](docs/RE-NOTES.md) | `X.EXE` memory layout, resolved indirect dispatchers, inline-string idiom |
 | [ARCHIVE-FORMAT.md](docs/ARCHIVE-FORMAT.md) | container format of `RETAL.00` / `RETAL.01` |
 | [RESOURCE-FORMATS.md](docs/RESOURCE-FORMATS.md) | RLE compression and the seven resource type handlers |
@@ -88,6 +90,14 @@ evidence for it; `disasm.py` reads it automatically.
 ./tools/grab-frame.sh 1500 build/frame.png    # headless screenshot
 ```
 
+The original DOS game can be run headless the same way, as a reference to
+compare against — see [DOS-ORACLE.md](docs/DOS-ORACLE.md):
+
+```bash
+python tools/dos/build_dos_hdd.py             # -> img/f29.hdd (DOS 6.22 + game)
+python tools/dos/run_qemu.py --timeout 60 --shot 12 --shot 25
+```
+
 `make` is not required; the build is plain bash.
 
 Grab frames at 1500 VBLs or later. Earlier than that and the program has not
@@ -119,7 +129,9 @@ src/        68030 assembly - the engine
 src/dsp/    DSP56001 assembly - the geometry pipeline
 src/inc/    included sources, deliberately outside the build glob
 tools/re/   reverse-engineering tools
+tools/dos/  DOS oracle: build and drive img/f29.hdd (shared with the sibling projects)
 tools/      build, runner and frame-grab scripts
+img/        genuine DOS 6.22 floppies + the built f29.hdd (ignored, no game data in git)
 ```
 
 ## Status
