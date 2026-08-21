@@ -25,8 +25,12 @@ import subprocess
 import sys
 import time
 
-QEMU = r'C:\Program Files\Qemu\qemu-system-i386.exe'
-MSYS = r'C:\msys64\mingw64\bin'
+# Host tool lookup lives in dosimg.host_tool() -- $QEMU / $DOS_TOOLS / $PATH /
+# the Windows install path.  dosimg.py is always synced alongside this file.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dosimg
+
+QEMU = dosimg.host_tool('qemu-system-i386')
 
 
 def project_root():
@@ -178,7 +182,7 @@ def mtool(prog, hdd, part_off, *args):
     """NB: mtype/mcat on a *missing* file dump the raw image and look like
     content -- always check the return code (lesson from the TIE project)."""
     env = dict(os.environ, MTOOLS_SKIP_CHECK='1')
-    p = subprocess.run([os.path.join(MSYS, prog + '.exe'), '-i',
+    p = subprocess.run([dosimg.host_tool(prog), '-i',
                         f'{hdd}@@{part_off}', *args],
                        capture_output=True, text=True, env=env)
     return p.stdout if p.returncode == 0 else f'<{prog}: {p.stderr.strip()}>'

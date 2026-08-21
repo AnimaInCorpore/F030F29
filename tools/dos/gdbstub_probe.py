@@ -45,7 +45,10 @@ import subprocess
 import sys
 import time
 
-QEMU = r'C:\Program Files\Qemu\qemu-system-i386.exe'
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dosimg
+
+QEMU = dosimg.host_tool('qemu-system-i386')
 FFMPEG = 'ffmpeg'
 QMP_PORT = 4556
 
@@ -190,8 +193,12 @@ def kill_strays():
     """A probe that crashed mid-run orphans its QEMU, which holds the ports; a
     fresh run then dies with 'Failed to find an available port'.  Clean up."""
     try:
-        subprocess.run(['taskkill', '/F', '/IM', 'qemu-system-i386.exe'],
-                       capture_output=True)
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/F', '/IM', 'qemu-system-i386.exe'],
+                           capture_output=True)
+        else:
+            subprocess.run(['pkill', '-f', 'qemu-system-i386'],
+                           capture_output=True)
         time.sleep(1)
     except OSError:
         pass

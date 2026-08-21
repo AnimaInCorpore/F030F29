@@ -26,17 +26,47 @@ real failure first:
      takes geometry on the device (`-device ide-hd,cyls=,heads=,secs=`), not on
      `-drive` -- since QEMU 6 the latter errors out.
 
-Requires: mtools + nasm in C:\msys64\mingw64\bin, and the genuine DOS 6.22
+Requires: mtools + nasm (found on $PATH, or in the MSYS2 prefix on the
+Windows machine -- see host_tool()), and the genuine DOS 6.22
 install floppies (Disk1.img has IO.SYS/MSDOS.SYS/COMMAND.COM and the boot
 record; Disk2.img has HIMEM/SHARE).
 """
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
 
+# Host-side helper programs (mtools, nasm).  Looked up in this order:
+#
+#   1. $<PROG> -- e.g. NASM=/opt/homebrew/bin/nasm, MCOPY=...
+#   2. $DOS_TOOLS, a directory holding them all
+#   3. $PATH
+#   4. the MSYS2 prefix this harness was originally written against
+#
+# so one copy of this file works on Windows, macOS and Linux.  Note these are
+# *host* paths; the C:\... strings elsewhere in this file are DOS guest paths
+# and have nothing to do with the machine running QEMU.
 MSYS = r'C:\msys64\mingw64\bin'
+
+
+def host_tool(prog):
+    """Absolute path to a host helper program, or exit with how to supply it."""
+    override = os.environ.get(prog.upper().replace('-', '_'))
+    if override:
+        return override
+    for d in (os.environ.get('DOS_TOOLS'), MSYS):
+        if not d:
+            continue
+        for cand in (os.path.join(d, prog), os.path.join(d, prog + '.exe')):
+            if os.path.isfile(cand):
+                return cand
+    found = shutil.which(prog)
+    if found:
+        return found
+    sys.exit(f'{prog} not found on $PATH. Install it, or set '
+             f'{prog.upper().replace("-", "_")}=<path> or DOS_TOOLS=<dir>.')
 
 # Fixed geometry: 16 heads x 63 sectors is the universal BIOS translation and
 # addresses up to 1024 cyl = 528 MB, which covers every image here.
@@ -71,7 +101,7 @@ QUIT_EXIT_CODE = 21
 
 
 def run(prog, *args, check=True, cwd=None):
-    p = subprocess.run([os.path.join(MSYS, prog + '.exe'), *args],
+    p = subprocess.run([host_tool(prog), *args],
                        capture_output=True, text=True, cwd=cwd,
                        env=dict(os.environ, MTOOLS_SKIP_CHECK='1'))
     if check and p.returncode != 0:
