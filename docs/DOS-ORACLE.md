@@ -123,8 +123,10 @@ commands intermittently on this Windows build. See `docs/CROSS-PROJECT.md` §6.
 
 `tools/dos/dosimg.py`, `run_qemu.py`, `mbr.asm` and `gdbstub_probe.py` are shared
 verbatim with the sibling projects (`C:\Arbeit\F030Underworld`,
-`C:\Arbeit\F030Underworld2`, `C:\Arbeit\TIE`) — keep the four copies in sync;
-only `build_dos_hdd.py` differs per game. `dosimg.py` builds the filesystem with
+`C:\Arbeit\F030Underworld2`, `C:\Arbeit\F030TieFighter`) — the master copies
+live in `C:\Arbeit\F030Method\dos\`, and `python dos/sync.py` there checks or
+(`--push`) updates every project copy; only `build_dos_hdd.py` differs per
+game. `dosimg.py` builds the filesystem with
 mtools and installs the **genuine** MS-DOS 6.22 boot record, keeping only its
 BPB replaced. Five invariants are asserted at build time, each of which was a
 real failure first in the sibling projects:
