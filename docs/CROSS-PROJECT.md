@@ -1,6 +1,6 @@
 # Cross-project techniques
 
-Five sibling projects reverse-engineer a DOS game in order to port it to the
+Six sibling projects reverse-engineer a DOS game in order to port it to the
 Atari Falcon030:
 
 | Project | Game | Binary shape |
@@ -8,8 +8,9 @@ Atari Falcon030:
 | `C:\Arbeit\F030POR` (POR) | Pool of Radiance (1988) | 16-bit MZ, Turbo Pascal, 47 KB stub + 227 KB `TPOV` overlay file (38 units) |
 | `C:\Arbeit\F030Underworld` (UW1) | Ultima Underworld (1992) | 16-bit MZ, Borland TC++ 1990, 562 KB + 141 KB `FBOV` overlay pool |
 | `C:\Arbeit\F030Underworld2` (UW2) | Ultima Underworld 2 (1993) | same engine family, 676 KB + 210 KB `FBOV` overlay pool |
-| `C:\Arbeit\F030TieFighter` (TIE) | TIE Fighter CD (1995) | MZ stub + Watcom `LE` (DOS/4G), 1 MB 32-bit flat image |
+| `C:\Arbeit\F030TieFighter` (TIE) | TIE Fighter CD (1995) | MZ stub + standard Watcom `LE` (DOS/4G), 1 MB 32-bit flat image |
 | `C:\Arbeit\F030F29` (F29) | F29 Retaliator (1990) | 68 KB hand-written 16-bit real mode |
+| `C:\Arbeit\F030Comanche` (CMN) | Comanche: Maximum Overkill (1992) | LZEXE-packed 16-bit MZ (60 KB → 378 KB unpacked): 16-bit bootstrap + 203 KB 32-bit flat program |
 
 They hit the same problems in different orders. This document collects the
 techniques that transfer, each attributed to where it was learned so the
@@ -67,8 +68,12 @@ is why the same family of documents disagreed with itself for months.
 The cheap insurance is the same in every case: compute the entry point, then
 disassemble twenty instructions there. A CRT start is unmistakable — for Borland
 16-bit it is `mov dx,<DGROUP>; mov [cs:..],dx; mov ah,30h; int 21h; mov bp,[2];
-mov bx,[2ch]; mov ds,dx`. If what you find needs an excuse, the field is wrong.
-*(UW1 `reassembly.md` §2.)*
+mov bx,[2ch]; mov ds,dx`; for Watcom it is `E9 xx 00` jumping over the embedded
+`WATCOM C/C++16 Run-Time system` banner (all three programs of TIE's launcher
+chain enter exactly so, and the 32-bit CRT does the same over its own banner —
+the "CRT tag" TIE's docs had located *was* the unrecognised entry point). If
+what you find needs an excuse, the field is wrong. *(UW1 `reassembly.md` §2;
+TIE `DOS4G-header.md`.)*
 
 **Reloc entry 0 hands you DGROUP for free.** In Borland `C0.ASM` output the
 first relocation patches the segment immediate of the very first instruction
@@ -199,8 +204,11 @@ exist. The fixup table then doubles as a **reverse-xref index**
 (`work/audit_fixups.py --target=OBJ:OFF`) — the only xref mechanism that can
 work on an LE image, because raw operands are stored object-relative and
 patched at load time (§3). *(TIE `work/audit_headers.py` /
-`audit_fixups.py`, 2026-08-20 — newer than the analysis docs, which still
-carry the withdrawn hybrid model; TIE adopt item 1.)*
+`audit_fixups.py`; absorbed into the analysis docs 2026-08-21 —
+`DOS4G-header.md` quotes each withdrawn reading beside its LE reality. The
+same audit caught a second instance in the same repo: `TIE.EXE`'s "8-entry
+pointer table @ 0x20" was its MZ relocation table, and its "e_lfanew 0x39EC"
+was relocation data — with `e_lfarlc = 0x20` the table starts *before* 0x3C.)*
 
 ## 2. Idioms that derail a disassembler
 
@@ -248,7 +256,7 @@ garbage further in, suspect compression.**
 
 ## 3. When cross-references come back empty
 
-Three of the five projects have hit "I searched the whole image for a reference
+Three of the six projects have hit "I searched the whole image for a reference
 to this address and found none", and in **every case the data was fine and the
 address model was wrong**:
 
@@ -420,8 +428,8 @@ convention.)*
 
 The four RE-first siblings (UW1, UW2, TIE, F29) carry an identical harness
 that boots genuine MS-DOS 6.22 in QEMU and runs the original game headless;
-POR runs the complementary DOSBox-X half (below) and its adopt list starts
-with taking this one. Shared verbatim: `dosimg.py`, `run_qemu.py`, `mbr.asm`,
+POR runs the complementary DOSBox-X half (below), CMN has its own capture
+tooling and neither harness yet — both have adopt items for taking this one. Shared verbatim: `dosimg.py`, `run_qemu.py`, `mbr.asm`,
 `gdbstub_probe.py` — **master copies in `C:\Arbeit\F030Method\dos\`**: fix
 there (or copy a project-local fix back there first), then
 `python dos/sync.py --push` updates every project, and plain `sync.py`
