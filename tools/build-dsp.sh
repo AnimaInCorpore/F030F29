@@ -9,14 +9,16 @@ set -e
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
+. "$ROOT/tools/toolchain.sh"
+
 DOSBOX=${DOSBOX:-$(command -v dosbox-staging || command -v dosbox || true)}
 if [ -z "$DOSBOX" ]; then
     DOSBOX="/c/Users/$USERNAME/AppData/Local/Programs/DOSBox Staging/dosbox.exe"
 fi
 [ -x "$DOSBOX" ] || { echo "error: no dosbox found (set DOSBOX=...)" >&2; exit 1; }
 
-ASM56K=${ASM56K:-/c/Arbeit/f030dsp3d/tools/asm56k}
-[ -d "$ASM56K" ] || { echo "error: asm56k not found at $ASM56K" >&2; exit 1; }
+f29_require ASM56K f030dsp3d/tools/asm56k F030Arcade/third_party/asm56k
+[ -d "$ASM56K" ] || { echo "error: asm56k is not a directory: $ASM56K" >&2; exit 1; }
 
 BUILD="$ROOT/build/dsp"
 rm -rf "$BUILD"

@@ -18,13 +18,23 @@ OUT=${2:-build/frame.png}
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
-# The Hatari build is an MSYS2 UCRT64 one and will not even start without its
-# runtime DLLs on PATH - it exits silently with status 0, writing no log at all.
-export PATH="/c/msys64/ucrt64/bin:$PATH"
+. "$ROOT/tools/toolchain.sh"
 
-HATARI=${HATARI:-/c/Arbeit/F030Arcade/third_party/hatari/build-ucrt64/src/hatari.exe}
-TOS=${TOS:-/c/Arbeit/f030dsp3d/tools/tos402.rom}
-MAGICK=${MAGICK:-/c/Program Files/ImageMagick-7.1.2-Q16-HDRI/magick.exe}
+# An MSYS2 UCRT64 Hatari will not even start without its runtime DLLs on PATH -
+# it exits silently with status 0, writing no log at all. Harmless elsewhere,
+# so this only fires where that directory actually exists.
+[ -d /c/msys64/ucrt64/bin ] && export PATH="/c/msys64/ucrt64/bin:$PATH"
+
+f29_require HATARI F030Arcade/third_party/hatari/build-ucrt64/src/hatari \
+                   F030Arcade/third_party/hatari/build/src/hatari
+f29_require TOS    f030dsp3d/tools/tos402.rom \
+                   F030Arcade/third_party/tos/tos402.img
+
+# Only used for the final PPM -> PNG step, so a miss is not fatal.
+f29_optional MAGICK "/c/Program Files/ImageMagick-7.1.2-Q16-HDRI/magick" magick
+
+# BSD userland has no timeout(1); coreutils installs it as gtimeout.
+TIMEOUT=$(command -v timeout || command -v gtimeout || true)
 
 WIDTH=320
 HEIGHT=240
@@ -33,8 +43,8 @@ FRAME_BYTES=$((WIDTH * HEIGHT * 2))
 mkdir -p build
 
 run_hatari() {
-    (cd release && timeout 150 "$HATARI" \
-        --memsize 14 --tos "$(cygpath -w "$TOS")" \
+    (cd release && $TIMEOUT ${TIMEOUT:+150} "$HATARI" \
+        --memsize 14 --tos "$(f29_hostpath "$TOS")" \
         --patch-tos true --mmu true --frameskips 0 --monitor rgb \
         --machine falcon --dsp emu --fast-boot true --sound off \
         --cpu-exact true --compatible true \
@@ -81,7 +91,7 @@ run_hatari
 [ -s release/frame.bin ] || { echo "no frame dumped" >&2; exit 1; }
 
 node tools/fb2png.js release/frame.bin build/frame.ppm $WIDTH $HEIGHT
-if [ -x "$MAGICK" ]; then
+if [ -n "$MAGICK" ]; then
     "$MAGICK" build/frame.ppm "$OUT"
     echo "wrote $OUT"
 else

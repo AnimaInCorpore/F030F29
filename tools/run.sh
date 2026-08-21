@@ -8,11 +8,12 @@ set -e
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
-HATARI=${HATARI:-/c/Arbeit/F030Arcade/third_party/hatari/build-ucrt64/src/hatari.exe}
-TOS=${TOS:-/c/Arbeit/f030dsp3d/tools/tos402.rom}
+. "$ROOT/tools/toolchain.sh"
 
-[ -x "$HATARI" ] || { echo "error: hatari not found at $HATARI" >&2; exit 1; }
-[ -f "$TOS" ]    || { echo "error: TOS rom not found at $TOS" >&2; exit 1; }
+f29_require HATARI F030Arcade/third_party/hatari/build-ucrt64/src/hatari \
+                   F030Arcade/third_party/hatari/build/src/hatari
+f29_require TOS    f030dsp3d/tools/tos402.rom \
+                   F030Arcade/third_party/tos/tos402.img
 
 PRG=${1:-release/f29.tos}
 [ -f "$PRG" ] || { echo "error: $PRG not built - run tools/build-run.sh" >&2; exit 1; }

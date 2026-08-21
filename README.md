@@ -106,17 +106,32 @@ finished starting, so what you get is the TOS desktop — see
 
 ### Toolchain
 
-The scripts default to paths on the original development machine but every one
-of them can be overridden by an environment variable:
+None of it lives in this repository. `tools/toolchain.sh` finds each tool in
+the sibling checkouts, and every script sources it, so the build works from
+wherever the family is checked out - macOS, Linux or an MSYS2 shell. The
+search order per tool is:
 
-| Variable | Tool |
-|---|---|
-| `VASM` | vasm, m68k, Motorola syntax |
-| `VLINK` | vlink |
-| `ASM56K` | directory holding `ASM56000.EXE`, `CLDLOD.EXE`, `DOS4GW.EXE` |
-| `DOSBOX` | DOSBox, needed because ASM56000 is a DOS4GW program |
-| `HATARI` | Hatari |
-| `TOS` | TOS 4.02 ROM image |
+1. the environment variable, if set - it wins, but must exist
+2. the sibling checkouts, looked for next to this one first and then under
+   the original development machine's `/c/Arbeit`
+3. `$PATH`, by base name
+
+Native and `.exe` names are both tried at every candidate, so the same script
+picks up a Mach-O `vasmm68k_mot` and a Win32 `vasmm68k_mot.exe` alike.
+
+| Variable | Tool | Usually found at |
+|---|---|---|
+| `VASM` | vasm, m68k, Motorola syntax | `../F030Arcade/third_party/vasm/` |
+| `VLINK` | vlink | `../F030Arcade/third_party/vlink/` |
+| `ASM56K` | directory holding `ASM56000.EXE`, `CLDLOD.EXE`, `DOS4GW.EXE` | `../f030dsp3d/tools/asm56k/` |
+| `DOSBOX` | DOSBox, needed because ASM56000 is a DOS4GW program | `$PATH` (`dosbox-staging`) |
+| `HATARI` | Hatari | `../F030Arcade/third_party/hatari/`, else `$PATH` |
+| `TOS` | TOS 4.02 ROM image | `../f030dsp3d/tools/tos402.rom` |
+| `MAGICK` | ImageMagick, only for the frame grab's PNG step | `$PATH` |
+| `F29_ROOTS` | where to look for the sibling checkouts | this checkout's parent, `/c/Arbeit` |
+
+Set `F29_ROOTS` if the siblings are not next to this checkout. The DSP build
+still needs DOSBox, because ASM56000 is a DOS program with no native port.
 
 vasm is invoked as `-Felf -m68030`, vlink as `-tos-fastload -b ataritos -e start`.
 
@@ -130,7 +145,7 @@ src/dsp/    DSP56001 assembly - the geometry pipeline
 src/inc/    included sources, deliberately outside the build glob
 tools/re/   reverse-engineering tools
 tools/dos/  DOS oracle: build and drive img/f29.hdd (shared with the sibling projects)
-tools/      build, runner and frame-grab scripts
+tools/      build, runner and frame-grab scripts; toolchain.sh locates the tools
 img/        genuine DOS 6.22 floppies + the built f29.hdd (ignored, no game data in git)
 ```
 

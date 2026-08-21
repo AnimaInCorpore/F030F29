@@ -1,19 +1,19 @@
 #!/bin/bash
 # Assemble and link the 68030 side into release/f29.tos.
 #
-# vasm/vlink are the prebuilt Win32 binaries from the sibling F030Arcade
-# checkout - same arrangement as f030dsp3d/tools/build-run.sh.  Override with
-# VASM=... / VLINK=... if they move.
+# vasm/vlink come from the sibling F030Arcade checkout - same arrangement as
+# f030dsp3d/tools/build-run.sh.  tools/toolchain.sh finds them there whether
+# they are native builds or the Win32 .exe ones; override with VASM=... /
+# VLINK=... if they live somewhere else.
 set -e
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
-VASM=${VASM:-/c/Arbeit/F030Arcade/third_party/vasm/vasmm68k_mot.exe}
-VLINK=${VLINK:-/c/Arbeit/F030Arcade/third_party/vlink/vlink.exe}
+. "$ROOT/tools/toolchain.sh"
 
-[ -x "$VASM" ]  || { echo "error: vasm not found at $VASM" >&2; exit 1; }
-[ -x "$VLINK" ] || { echo "error: vlink not found at $VLINK" >&2; exit 1; }
+f29_require VASM  F030Arcade/third_party/vasm/vasmm68k_mot
+f29_require VLINK F030Arcade/third_party/vlink/vlink
 
 mkdir -p build release
 
