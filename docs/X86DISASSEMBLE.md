@@ -23,11 +23,24 @@ exactly four, all patching the same segment value — which said immediately tha
 the program computes its own segments rather than letting the loader do it, and
 that it is essentially one 64 KB segment plus a small tail.
 
+Parse it *yourself*, and write down the field offsets you used. Three of the
+fields are trivially confusable and each one silently relocates the whole
+analysis: `e_ip` is at `0x14` and `e_cs` at `0x16` (swap them and the entry
+point moves by `e_cs << 4`); the image is `(e_cp - 1) * 512 + e_cblp`, not
+`e_cp * 512`, unless `e_cblp` is zero; and the relocation entries are
+`(offset u16, segment u16)`, four bytes each, from `e_lfarlc` — read with any
+other stride they turn into "out-of-range junk entries" that are entirely an
+artefact of the stride. `X.EXE`'s measured header, the four decoded
+relocations and the file↔runtime mapping are quoted in
+[RE-NOTES.md](RE-NOTES.md) so this does not have to be re-derived.
+
 Then read the first thirty instructions. Startup code is short, unobfuscated and
 tells you the memory model. Here it built a nine-entry segment table in place:
 a loop that reads a size, stores a running base, adds the size. That gave the
-whole memory map — 352 KB in nine regions — before a single game routine was
-looked at.
+whole memory map — 353,216 bytes in nine regions — before a single game routine
+was looked at. (✗ **Withdrawn:** "352 KB in nine regions". The nine size words
+sum to `0x563C` paragraphs = 353,216 B; the old figure came from a mistyped
+slot size, corrected in [RE-NOTES.md](RE-NOTES.md).)
 
 **Watch for a second, larger view.** Buffers well past the load module are where
 loaded data goes. Their sizes are a hint about what gets loaded.

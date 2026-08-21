@@ -253,7 +253,7 @@ m_loop1a
 	dbra	d7,m_loop1a
 
 	bsr		hud_init
-	bsr		menu_init
+;	bsr		menu_init	; TEMP: disabled during cpu3d.s development, see task list
 
 ; -----------------------------------------------------------------------------
 

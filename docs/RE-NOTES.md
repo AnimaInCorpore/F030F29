@@ -36,6 +36,94 @@ opcode statistics agree:
 The one exception is `RETAL.00` resource 15, a 7,081-byte overlay that the
 loader far-calls at offset 0. See [ARCHIVE-FORMAT.md](ARCHIVE-FORMAT.md).
 
+## The MZ container
+
+Re-measured from the file, byte for byte, and quoted here so nobody has to
+re-derive it — misreading an MZ header is the cheapest way to build a whole
+chapter of analysis on sand. Regenerate with `python tools/re/mzinfo.py`.
+
+`X.EXE` is **68,640 bytes** (`0x10C20`), a plain MZ — no `e_lfanew`, no PE/NE
+extension, no `FBOV` overlay pool. The 14 header words, as they actually are:
+
+| Off | Field | Value | Note |
+|---|---|---|---|
+| `0x00` | `e_magic` | `0x5A4D` | `MZ` |
+| `0x02` | `e_cblp` | `0x0020` | bytes used in the last page = 32 |
+| `0x04` | `e_cp` | `0x0087` | 135 pages |
+| `0x06` | `e_crlc` | `0x0004` | four relocations |
+| `0x08` | `e_cparhdr` | `0x0020` | header = 32 paragraphs = `0x200` |
+| `0x0A` | `e_minalloc` | `0x1000` | 64 KB beyond the image — the stack |
+| `0x0C` | `e_maxalloc` | `0xFFFF` | take every free paragraph |
+| `0x0E` | `e_ss` | `0x10A2` | |
+| `0x10` | `e_sp` | `0xFFFE` | |
+| `0x12` | `e_csum` | `0x3977` | |
+| `0x14` | `e_ip` | `0x0000` | |
+| `0x16` | `e_cs` | `0x0000` | |
+| `0x18` | `e_lfarlc` | `0x001E` | relocation table offset |
+| `0x1A` | `e_ovno` | `0x0000` | not an overlay |
+
+`e_ip` is at `0x14` and `e_cs` at `0x16`, in that order. Both are zero here, so
+`X.EXE` cannot catch you swapping them — worth stating explicitly, because the
+sibling UW1 project did swap them and got an entry point `0xEC5` paragraphs
+adrift with nothing in the file to object. Take the order from this table, not
+from a listing that happens to agree either way. The word at `0x1C` (`0x0001`)
+sits between `e_ovno` and the relocation table; it is not part of the 28-byte
+fixed header and the loader ignores it.
+
+Derived:
+
+```
+header size = e_cparhdr * 16        = 0x200   (512)
+image size  = (e_cp - 1) * 512 + e_cblp = 0x10C20 (68,640) == the file size
+load module = image - header        = 0x10A20 (68,128)
+entry       = header + (e_cs << 4) + e_ip = 0x200
+```
+
+Image size equals file size exactly, so there is **nothing appended past the
+image** — no self-loaded tail, no overlay pool, nothing for a loader to miss.
+`e_ss << 4` = `0x10A20` is exactly the load-module size, so the stack starts on
+the first paragraph after the image and `e_minalloc`'s 64 KB is what covers it.
+
+### The relocation table
+
+Four entries, `(offset u16, segment u16)` — 4 bytes each, DOS's only format.
+Raw, at `0x1E`:
+
+```
+001E: AA C1 00 00  F4 C1 00 00  9A C2 00 00  51 C3 00 00
+```
+
+| # | offset | segment | file offset | word found there |
+|---|---|---|---|---|
+| 0 | `0xC1AA` | `0x0000` | `0x0C3AA` | `0x1000` |
+| 1 | `0xC1F4` | `0x0000` | `0x0C3F4` | `0x1000` |
+| 2 | `0xC29A` | `0x0000` | `0x0C49A` | `0x1000` |
+| 3 | `0xC351` | `0x0000` | `0x0C551` | `0x1000` |
+
+All four are unique, all inside the image, all in segment 0, and all patch the
+same value `0x1000` — the paragraph offset of the tail segment (slot 2 below).
+The 466 bytes of header slack between the end of the table (`0x2E`) and
+`header size` (`0x200`) are **all zero**. There are no junk entries, no second
+table and nothing a stock DOS loader would object to.
+
+### Address mapping
+
+Everything in these documents is a **segment-0 offset** — the address a
+`ndisasm -b 16 -o 0` listing of the load module shows, and the address
+`disasm.py` prints as `0000:XXXX`.
+
+| From | To | Formula |
+|---|---|---|
+| doc address | file offset | `file = 0x200 + addr` |
+| file offset | doc address | `addr = file - 0x200` |
+| doc address | runtime linear | `(load_seg << 4) + addr` |
+| doc address | Ghidra linear | `addr + 0x10000` (skew `0x10000 - e_cparhdr*16` = `0xFE00` from the *file* offset) |
+
+Worked check: relocation 0 says offset `0xC1AA`, so the word at file
+`0x200 + 0xC1AA = 0x0C3AA` must be the segment constant the loader patches. It
+is `00 10` = `0x1000`, which is the tail segment's paragraph base in the table
+below. Mapping, relocation table and segment table all agree.
+
 ## Memory layout
 
 Entry at `0000:0000`. The first 32 bytes build a segment table: nine words of
@@ -44,13 +132,18 @@ in place into *segment bases* (read `bx = [di]`, store `ax`, `ax += bx`).
 
 ```
 0000:0000  cli / cld
-0000:0002  mov  dx, [2]          ; PSP: top of memory segment
+0000:0002  mov  dx, [2]          ; DS is still the PSP here: top of memory segment
+0000:0006  mov  ax, cs
+0000:0008  mov  ds, ax / mov es, ax
 0000:000C  mov  di, 0xFC16       ; segment table, nine entries
 0000:000F  mov  cx, 9
-0000:0012  mov  bx, [di] / stosw / add ax, bx / loop
+0000:0012  mov  bx, [di] / stosw / add ax, bx / loop   ; ax starts as CS
 0000:0019  mov  ss, [0xFC1C]     ; stack from slot 3
 0000:001D  mov  sp, 0xC00        ; 3 KB stack
 ```
+
+`ax` entering the loop is `CS`, so the words the loop writes back are *absolute*
+segments; the table below states them relative to the load address.
 
 Result, relative to the load address:
 
@@ -63,9 +156,19 @@ Result, relative to the load address:
 | `FC1E` | +0x3000 | 63,360 B | buffer |
 | `FC20` | +0x3F78 | 12,000 B | buffer |
 | `FC22` | +0x4266 | 37,440 B | buffer (`mov es,[0xFC22]` at `0x0067`) |
-| `FC24` | +0x4B8A | 36,096 B | buffer |
+| `FC24` | +0x4B8A | 35,968 B | buffer |
 | `FC26` | +0x5452 | 7,840 B | buffer (holds the overlay) |
-| end | +0x563C | | total **352,448 B** |
+| end | +0x563C | | total **353,216 B** |
+
+✗ **Withdrawn:** slot `FC24` was given as **36,096 B** and the total as
+**352,448 B**. The size word at `0xFC24` is file `0x200 + 0xFC24 = 0x0FE24`,
+which reads `C8 08` = `0x08C8` = 2,248 paragraphs = **35,968 B**, and the nine
+sizes sum to `0x563C` paragraphs = **353,216 B**. The base column in the table
+above always disagreed with the old figure and nobody noticed: `0x5452 −
+0x4B8A = 0x8C8`, not `0x8D0`. 35,968 is also exactly what `RETAL.01` resources
+2 and 3 decompress to (see [RESOURCE-FORMATS.md](RESOURCE-FORMATS.md)) — the
+buffer is sized to the byte for its contents, which is why the wrong figure
+looked plausible but the right one is provable.
 
 ## Overlay dispatcher `lcall [0xFC14]`
 
