@@ -578,11 +578,27 @@ load-bearing policies, so their names are known here:
   while graphics/sound hardware access is investigated only far enough to
   reproduce the observable result. The line is observable vs. mechanism, not
   pixels vs. numbers.
-- **Nothing without a source.** Every non-trivial item in a port is
-  explicitly one of: **Grounded** (cites the DOS routine or verified format),
-  **Target artefact** (serves the Falcon, claims nothing about the original),
-  or **Unproven** (loudly marked at the definition, listed as an open risk).
-  An unproven item may not be used to justify a second assumption.
+- **Nothing without a source**, which is a rule about code and not only
+  about data: **never write 68k code without referring to a DOS routine.**
+  Every ported routine names the flat address or range it came from, in its
+  header; code that cannot name one does not get written, and the path is left
+  stopped or dormant instead. Every non-trivial item is explicitly one of:
+  **Grounded** (cites the DOS routine or verified format), **Target artefact**
+  (serves the Falcon, claims nothing about the original), or **Unproven**
+  (loudly marked at the definition, listed as an open risk). An unproven item
+  may not be used to justify a second assumption.
+- **Two things that are also invention**, and neither looks like it while you
+  are writing it. *A guard the original does not have* — a clamp or range
+  check added for safety is a second behaviour for input nobody has checked
+  against the first, and it hides which one is wrong; it belongs only where a
+  genuine platform boundary forces it, documented beside what the original
+  does. *Tuning code to close a gap against a measurement you doubt* — fitting
+  to a bad oracle destroys traceability more thoroughly than a guessed
+  constant, because the result matches and nobody looks again. Both are worked
+  examples in METHOD.md §4.2, from CMN 2026-08-22: three guards written and
+  removed the same day, and a terrain silhouette that stayed 21-23 rows off
+  through eight parameter fits because no scalar in a projection can change
+  the shape of a profile.
 - **The target seam is an 8-bit indexed surface**: `src/common/` is
   target-neutral and 68000-clean (build-enforced), and only
   `src/target/<name>/` turns indices into hardware pixels. Converters decode
