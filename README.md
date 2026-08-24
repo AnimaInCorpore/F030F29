@@ -7,7 +7,7 @@ the Atari Falcon030.
 
 | Topic | Decision |
 |---|---|
-| Approach | 1:1 port via reverse engineering — `X.EXE` is disassembled and its x86 real-mode logic translated function by function to 68030 |
+| Approach | Behaviour-faithful port via reverse engineering — `X.EXE` is the authority, while Falcon implementations may adapt mechanisms without changing observable contracts |
 | Language | Pure 68030 assembly (vasm, Motorola syntax) plus DSP56001 assembly |
 | Video mode | 320x240, True Color (16 bit, 2 bytes per pixel) |
 | Target | Stock Falcon030, 16 MHz, 4 MB, no FPU |
@@ -48,7 +48,7 @@ far is written up in `docs/`:
 | [DOS-ORACLE.md](docs/DOS-ORACLE.md) | running the *original* DOS game headless in QEMU, to check the port against |
 | [X86DISASSEMBLE.md](docs/X86DISASSEMBLE.md) | how to go about disassembling a DOS binary, from what this one cost |
 | [RE-WORKFLOW.md](docs/RE-WORKFLOW.md) | picking this up cold — tools, the session workflow, patterns and traps |
-| [CROSS-PROJECT.md](docs/CROSS-PROJECT.md) | techniques shared with the sibling Falcon030 ports (POR, UW1, UW2, TIE Fighter, Comanche) — generated from `../F030Method` |
+| [CROSS-PROJECT.md](docs/CROSS-PROJECT.md) | techniques shared by the eleven projects in `../F030Method/README.md` — generated from the parent repository |
 | [RE-NOTES.md](docs/RE-NOTES.md) | `X.EXE` memory layout, resolved indirect dispatchers, inline-string idiom |
 | [ARCHIVE-FORMAT.md](docs/ARCHIVE-FORMAT.md) | container format of `RETAL.00` / `RETAL.01` |
 | [RESOURCE-FORMATS.md](docs/RESOURCE-FORMATS.md) | RLE compression and the seven resource type handlers |
@@ -80,6 +80,10 @@ All in `tools/re/`, Python 3 with [capstone](https://www.capstone-engine.org/):
 
 `re/seeds.txt` records every resolved indirect jump target together with the
 evidence for it; `disasm.py` reads it automatically.
+
+The authoritative phase and fidelity policy is
+[`../F030Method/METHOD.md`](../F030Method/METHOD.md); repository-specific rules,
+source provenance and the closed substitution list are in [`AGENTS.md`](AGENTS.md).
 
 ## Building
 

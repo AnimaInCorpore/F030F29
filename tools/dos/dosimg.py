@@ -283,6 +283,10 @@ class DosImage:
                 rel = os.path.relpath(root, lr).replace(os.sep, '/')
                 rel = '' if rel == '.' else rel
                 for f in files:
+                    # Repository placeholders are not game assets and cannot
+                    # be represented by an MS-DOS 8.3 directory entry.
+                    if f == '.gitkeep':
+                        continue
                     key = f'{rel}/{f}' if rel else f
                     if key in merged:
                         sys.exit(f'collision merging trees: {key}')
