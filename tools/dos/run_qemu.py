@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-r"""Headless QEMU runner for img/uw.hdd -- the project's dynamic oracle.
+r"""Headless QEMU runner -- the project's dynamic oracle.
+
+Game-agnostic and byte-identical across the family (dos/sync.py keeps it so):
+the disk image comes from default_hdd(), the script's own location finds the
+project root, and nothing here names a game. Paths below are written as
+`work/run_qemu.py`; F29 keeps the harness in `tools/dos/` instead.
 
 Observability on the Windows QEMU build is limited (no working serial sink), so
 this driver uses three channels instead:
@@ -33,23 +38,11 @@ import dosimg
 QEMU = dosimg.host_tool('qemu-system-i386')
 
 
-def project_root():
-    """Nearest ancestor of this script that holds an `img/` directory.
-
-    Found by walking up rather than assuming a fixed depth, so this file stays
-    byte-identical across the sibling projects however they lay their scripts
-    out (`work/run_qemu.py` in UW1/UW2/TIE, `tools/dos/run_qemu.py` in F29)."""
-    d = os.path.dirname(os.path.abspath(__file__))
-    while True:
-        if os.path.isdir(os.path.join(d, 'img')):
-            return d
-        parent = os.path.dirname(d)
-        if parent == d:
-            return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        d = parent
-
-
-ROOT = project_root()
+# Root resolution lives in dosimg.find_project_root() so this file and the
+# image builder cannot disagree about where the project is -- they sit at two
+# different depths (`work/` in POR/UW1/UW2/TIE, `tools/dos/` in F29) and the
+# old level-counting fallback got F29 wrong.
+ROOT = dosimg.find_project_root(__file__)
 # scratch dir: whichever of these the project already uses for build output
 OUTDIR = next((os.path.join(ROOT, d, 'qemu_out') for d in ('work', 'build')
                if os.path.isdir(os.path.join(ROOT, d))),
@@ -144,9 +137,27 @@ class Qmp:
             pass
 
 
+def stale(*paths):
+    """Delete previous runs' artefacts before asking QEMU for new ones.
+
+    OUTDIR persists between runs and the tags repeat (`t30`, `timeout`), so a
+    capture that never arrives would otherwise be answered by the *last* run's
+    file -- silently, and looking exactly like a successful capture. The
+    standing lesson is "screenshot every driven step, or you cannot say which
+    state you measured"; a stale file breaks it in the way that is hardest to
+    notice, because the picture is of the right program in the wrong run.
+    """
+    for p in paths:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
 def dump_text_screen(qmp, tag):
     """Decode the VGA colour-text plane (0xB8000, 80x25, char/attr pairs)."""
     path = os.path.join(OUTDIR, f'vga_{tag}.bin')
+    stale(path)
     qmp.hmp(f'pmemsave 0xB8000 4000 "{path.replace(chr(92), "/")}"')
     for _ in range(20):
         if os.path.exists(path) and os.path.getsize(path) == 4000:
@@ -166,6 +177,7 @@ def screendump(qmp, tag):
     where the 0xB8000 text plane is meaningless)."""
     ppm = os.path.join(OUTDIR, f'screen_{tag}.ppm')
     png = os.path.join(OUTDIR, f'screen_{tag}.png')
+    stale(ppm, png)
     qmp.hmp(f'screendump "{ppm.replace(chr(92), "/")}"')
     for _ in range(30):
         if os.path.exists(ppm) and os.path.getsize(ppm) > 0:
@@ -173,8 +185,14 @@ def screendump(qmp, tag):
         time.sleep(0.2)
     if not os.path.exists(ppm):
         return '<no screendump>'
-    subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', ppm, png],
-                   capture_output=True)
+    # PPM is already a readable capture; PNG is a convenience. A missing or
+    # failing ffmpeg must not take the run down mid-capture -- hand back the
+    # PPM and let the caller look at that.
+    try:
+        subprocess.run([dosimg.host_tool('ffmpeg'), '-y', '-loglevel', 'error',
+                        '-i', ppm, png], capture_output=True)
+    except (OSError, SystemExit):
+        pass
     return png if os.path.exists(png) else ppm
 
 

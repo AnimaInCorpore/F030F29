@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 r"""dosimg -- build a bootable MS-DOS 6.22 FAT16 hard-disk image for a DOS game.
 
-Reusable across the sibling DOS-game projects (UW1 / UW2 / TIE); each one ships
-an identical copy of this module plus a thin `build_dos_hdd.py` that supplies
-its own layout and CONFIG.SYS/AUTOEXEC.BAT.  See `analysis/qemu-boot.md` for the
-whole procedure and the reasons behind each rule below.
+Reusable across the sibling DOS-game projects; each one ships an identical copy
+of this module (F030Method/dos/sync.py keeps them so) plus a thin
+`build_dos_hdd.py` that supplies its own layout and CONFIG.SYS/AUTOEXEC.BAT.
+See `analysis/qemu-boot.md` / `docs/DOS-ORACLE.md` for the whole procedure and
+the reasons behind each rule below.
 
 The five things that make the image actually boot -- every one of them was a
 real failure first:
@@ -29,8 +30,11 @@ real failure first:
 Requires: mtools + nasm (found on $PATH, or in the MSYS2 prefix on the
 Windows machine -- see host_tool()), and the genuine DOS 6.22
 install floppies (Disk1.img has IO.SYS/MSDOS.SYS/COMMAND.COM and the boot
-record; Disk2.img has HIMEM/SHARE).
+record; Disk2.img has HIMEM/SHARE).  find_floppies() locates that set the same
+way host_tool() locates programs, so a project being seeded does not have to
+acquire its own copy first -- see its docstring.
 """
+import glob
 import json
 import os
 import shutil
@@ -67,6 +71,116 @@ def host_tool(prog):
         return found
     sys.exit(f'{prog} not found on $PATH. Install it, or set '
              f'{prog.upper().replace("-", "_")}=<path> or DOS_TOOLS=<dir>.')
+
+FLOPPY_GLOB = 'Microsoft MS-DOS 6.22*'
+FLOPPY_DISKS = ('Disk1.img', 'Disk2.img')
+
+
+def _is_floppy_set(d):
+    return all(os.path.isfile(os.path.join(d, n)) for n in FLOPPY_DISKS)
+
+
+def find_floppies(project_root=None):
+    """Directory holding the genuine MS-DOS 6.22 install floppies.
+
+    The floppy set is a prerequisite of the *shared* harness, not of any one
+    game, but it used to be acquired per project: UW1 and TIE each carry their
+    own byte-identical 5 MB `.7z` and UW2 a third extracted copy, while the two
+    projects that still need seeding have none.  That is the friction that kept
+    `sync.py --init` from actually finishing the job, so look for the set the
+    way host_tool() looks for programs:
+
+      1. $DOS622 -- a directory holding Disk1.img/Disk2.img
+      2. this project's own img/Microsoft MS-DOS 6.22*/
+      3. any sibling F030* project's img/Microsoft MS-DOS 6.22*/
+      4. an unextracted `Microsoft MS-DOS 6.22*.7z` in this project or a
+         sibling, expanded once into this project's img/
+
+    Nothing is copied in cases 3: the sibling's directory is used in place, so
+    seeding a project does not duplicate 5 MB again.  Exits with what to supply
+    if none of the four finds it.
+    """
+    root = os.path.abspath(project_root or find_project_root())
+    env = os.environ.get('DOS622')
+    if env:
+        if not _is_floppy_set(env):
+            sys.exit(f'$DOS622={env} does not hold '
+                     f'{" + ".join(FLOPPY_DISKS)}')
+        return env
+
+    workspace = os.path.dirname(root)
+    projects = [root] + sorted(
+        os.path.join(workspace, n) for n in os.listdir(workspace)
+        if n.startswith('F030') and os.path.join(workspace, n) != root
+        and os.path.isdir(os.path.join(workspace, n)))
+
+    for proj in projects:
+        for d in sorted(glob.glob(os.path.join(proj, 'img', FLOPPY_GLOB))):
+            if os.path.isdir(d) and _is_floppy_set(d):
+                return d
+
+    for proj in projects:
+        for arc in sorted(glob.glob(os.path.join(proj, FLOPPY_GLOB + '.7z'))
+                          + glob.glob(os.path.join(proj, 'img',
+                                                   FLOPPY_GLOB + '.7z'))):
+            dest = os.path.join(root, 'img',
+                                os.path.basename(arc)[:-len('.7z')])
+            os.makedirs(dest, exist_ok=True)
+            print(f'expanding DOS 6.22 floppies: {arc}\n  -> {dest}')
+            run('7zz', 'x', '-y', f'-o{dest}', arc)
+            hit = dest if _is_floppy_set(dest) else next(
+                (r for r, _, f in os.walk(dest)
+                 if all(n in f for n in FLOPPY_DISKS)), None)
+            if hit:
+                return hit
+
+    sys.exit(
+        'genuine MS-DOS 6.22 install floppies not found.\n'
+        f'  Looked for a directory holding {" + ".join(FLOPPY_DISKS)} in:\n'
+        f'    $DOS622\n'
+        f'    {os.path.join(root, "img", FLOPPY_GLOB)}\n'
+        f'    the same path under every sibling F030* project\n'
+        f'    an unextracted {FLOPPY_GLOB}.7z in any of them\n'
+        '  Supply one of those, or set DOS622=<dir>.  The set is the boot\n'
+        '  record plus IO.SYS/MSDOS.SYS/COMMAND.COM; mformat\'s own boot code\n'
+        '  hangs in QEMU, which is why a genuine floppy is required.')
+
+
+def find_project_root(start=None):
+    """The project directory `start` (default: this file) lives in.
+
+    One rule for the whole harness, because the copies sit at two different
+    depths -- `work/` in POR/UW1/UW2/TIE, `tools/dos/` in F29 -- and a rule
+    that counts directory levels gets one of them wrong.  Three signals, in
+    order of how strongly they mean "project root":
+
+      1. an `img/` directory   -- where the harness keeps its disk images
+      2. a `.git` entry        -- the repo boundary
+      3. a directory named F030* -- the family naming convention
+
+    `img/` first was the original rule and is right whenever it exists; it is
+    not sufficient alone, because a project that has not built an image yet has
+    no img/ and the walk then falls off the top.  That is how F29 -- the one
+    project with no img/ and the one at the other depth -- resolved its root to
+    `F030F29/tools` and put its scratch output two levels from where it meant.
+    """
+    start = os.path.abspath(start or __file__)
+    chain = []
+    d = os.path.dirname(start)
+    while True:
+        chain.append(d)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    for probe in (lambda p: os.path.isdir(os.path.join(p, 'img')),
+                  lambda p: os.path.exists(os.path.join(p, '.git')),
+                  lambda p: os.path.basename(p).startswith('F030')):
+        hit = next((p for p in chain if probe(p)), None)
+        if hit:
+            return hit
+    return os.path.dirname(os.path.dirname(start))
+
 
 # Fixed geometry: 16 heads x 63 sectors is the universal BIOS translation and
 # addresses up to 1024 cyl = 528 MB, which covers every image here.
@@ -118,9 +232,11 @@ def is_83(name):
 
 
 class DosImage:
-    def __init__(self, out, size_mb, floppy_dir, work_dir, label='DOS622'):
+    def __init__(self, out, size_mb, work_dir, floppy_dir=None, label='DOS622'):
         self.out = os.path.abspath(out)
-        self.floppy_dir = floppy_dir
+        # Resolved here rather than demanded from every build_dos_hdd.py, so a
+        # newly seeded project inherits a sibling's floppy set (find_floppies).
+        self.floppy_dir = floppy_dir or find_floppies()
         self.work = work_dir
         self.label = label.upper().ljust(11)[:11]
         os.makedirs(self.work, exist_ok=True)
