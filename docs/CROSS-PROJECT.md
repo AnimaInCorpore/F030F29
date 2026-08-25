@@ -750,6 +750,15 @@ load-bearing policies, so their names are known here:
   not DOS parity. A 60 Hz Falcon presentation target is a display choice, not
   permission to alter DOS game flow. Record every timing substitution and
   measured difference in the function ledger.
+- **A runnable fixture must expose its evidence seam.** If a browser slice is
+  driven by a fixture cadence while DOS wall-clock timing is `Unproven`, keep
+  the logical `advanceTicks(count)` entry point independent of presentation and
+  label the host clock as a harness artefact. Retain ordered replay/input bytes,
+  emitted events, pre-draw/post-tick state checkpoints, and canonical logical
+  framebuffer/page hashes in a bounded trace that regression fixtures can read.
+  Do not attach a DOM key or button directly to game state: an unrecovered DOS
+  input path stays `Unproven`, and any restart/pause convenience control is
+  visibly marked as a harness control excluded from supported flow.
 - **Function-body translation must not add defensive behaviour.** A JavaScript
   counterpart reproduces the recovered DOS function and side effects directly;
   it must not add `throw` paths, assertions, validation, clamps, defaults,
