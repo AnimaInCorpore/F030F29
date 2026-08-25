@@ -725,6 +725,42 @@ load-bearing policies, so their names are known here:
   state checkpoints, logical framebuffer/page hashes and emitted events for that
   flow. An isolated function may remain `Identified` or `Unproven`, but it is not
   part of the supported browser port until this connected-flow gate passes.
+- **Input must run through the DOS I/O driver and must not improve game flow.**
+  Physical/browser keyboard and pointing-device events are transport data only:
+  feed them into the recovered DOS driver contract, then run the authoritative
+  DOS consumer and preserve its widths, units, transitions, queues, polling,
+  acknowledgement, ordering and error results. A DOM click or key may not call
+  a selection helper, inject state, synthesize an action or bypass an unported
+  function. An unrecovered keyboard path remains `Unproven`; convenience
+  shortcuts are labelled test controls and excluded from supported flow. The
+  only broad mechanism exceptions are graphics and sound backends, which may
+  replace hardware after their logical contracts are recovered without
+  changing input-driven state or ordering.
+- **DOS timing and game-flow cadence are mandatory.** Preserve the recovered
+  DOS timing contract wherever it affects input sampling, scheduler callbacks,
+  animation, audio, frame publication, races or state. Do not assume 60 Hz from
+  a browser or display; recover the executable's PIT/`INT 8`, timer-slot,
+  VBL/wait and runtime-period evidence from DOS. Browser and Falcon simulation
+  must use an explicit deterministic tick/event scheduler, while
+  `requestAnimationFrame`, host timers and physical VBL may drive presentation
+  only. They may not define simulation order or drop, duplicate, accelerate or
+  delay authoritative ticks. Preserve drift-free accumulators and input
+  poll/acknowledgement position where proven. An unrecovered cadence is
+  `Unproven`; a fixture cadence is a labelled harness/presentation artefact,
+  not DOS parity. A 60 Hz Falcon presentation target is a display choice, not
+  permission to alter DOS game flow. Record every timing substitution and
+  measured difference in the function ledger.
+- **Function-body translation must not add defensive behaviour.** A JavaScript
+  counterpart reproduces the recovered DOS function and side effects directly;
+  it must not add `throw` paths, assertions, validation, clamps, defaults,
+  retries or logging branches that the DOS function does not have. Preserve
+  fall-through, return values, widths, wrapping, side effects, ordering and
+  unsupported-input behaviour; mark an unrepresentable case `Unproven` or
+  `Unsupported` instead of improving it. Assertions, hashes, diagnostics and
+  failure reports belong in build/fixture/parity harnesses or necessary host
+  and target boundaries, outside the semantic function path. A boundary guard
+  required to prevent a host crash is a documented target artefact, never
+  invented DOS error handling.
 - **Browser file access goes through a virtual DOS filesystem.** The semantic
   core uses deterministic named-byte-file `open`/`read`/`seek`/`tell`/`close`
   semantics. IndexedDB may persist imported binaries, caches and saves;
