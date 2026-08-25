@@ -35,6 +35,22 @@ canonical DOS address or range, preserved contract and side effects, and an
 evidence grade: `executed/content-matched`, `ratchet+guard`, or
 `sweep-inferred`. Platform-only code must say `N/A - platform replacement`.
 
+For every function represented in browser, 68030 or DSP code, maintain the
+`METHOD.md` §4.2 function record: DOS identity and observation, recovered
+purpose/contract and fixtures, implementation symbols, and a difference ledger
+against DOS. Reassembly, decompiler output and target code are evidence or
+implementations; the hashed DOS executable remains the behavioural authority.
+State and prove even “no difference”; an unresolved difference is `Unproven`
+and cannot enter a supported path. The deterministic browser reference starts
+with the first function. Use its controlled experiments to identify the
+function's role, contract, side effects and Falcon seam, then confirm each
+finding against DOS before entering it in the record; its fixtures land before
+or with every supported Falcon slice.
+## Implementation-source links
+
+Every JavaScript/browser and 68000/m68k function source that implements or exposes a recovered DOS function must carry an adjacent comment or docstring linking to the durable function record and naming the disassembled DOS function symbol plus canonical range/entry (for example, `DOS: FUN_0000_1234; record: <stable-function-record>`). Use the same stable function ID in both implementation sources; a separate map or file-level comment is not enough. Code with no DOS counterpart must say `N/A - platform replacement` or `Target artefact` at the definition.
+
+
 ## Closed platform-substitution list
 
 The current substitution surface is closed to these reviewed boundaries:
@@ -57,3 +73,13 @@ Use `tools/build-run.sh`, `tools/build-dsp.sh`, and the checks documented in
 `docs/ENGINE.md`. Keep exact regeneration commands in the relevant document.
 After shared-document or DOS-harness changes, run the parent generators rather
 than editing generated copies locally.
+
+## Cross-port documentation rule
+
+When a change or investigation establishes a confirmed finding, correction,
+tool/workflow lesson, or other fact that can help more than this repository,
+update the authoritative shared documentation in the same session and
+regenerate any derived copies. Always do this; do not leave transferable
+findings only in chat, code, or generated output. Keep project-specific details
+in the local canonical document and upstream the reusable rule with its
+evidence, scope, and status.

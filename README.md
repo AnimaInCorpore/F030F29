@@ -15,6 +15,13 @@ the Atari Falcon030.
 The rasterizer is structured so that a later switch to 8 bit plus C2P stays a
 localised change — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+The hashed DOS `X.EXE` binary and captured DOS execution remain the behavioural
+authority. Every function represented in browser, 68030 or DSP code has the
+`METHOD.md` §4.2 contract/difference record and a deterministic browser
+fixture. The browser harness is used to investigate a function's role and
+side effects before target implementation, then to compare DOS → browser →
+Falcon results; its hypotheses do not overrule DOS.
+
 ## Game data
 
 **This repository contains no game data.** Neither the original files nor

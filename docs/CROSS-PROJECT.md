@@ -1,7 +1,9 @@
 # Cross-project techniques
 
-Ten sibling projects reverse-engineer a DOS game in order to port it to the
-Atari Falcon030, and an eleventh ports one from a recovered source tree instead:
+Eleven sibling projects reverse-engineer a DOS game in order to port it to the
+Atari Falcon030. For every selected build, the hashed shipped DOS executable
+and its observed execution are the behavioural authority; a recovered source
+tree is supporting evidence, never a replacement for the DOS oracle:
 
 | Project | Game | Binary shape |
 |---|---|---|
@@ -15,14 +17,13 @@ Atari Falcon030, and an eleventh ports one from a recovered source tree instead:
 | `C:\Arbeit\F030Links386` (L386) | Links 386 CD (1995) | MZ loader with DOS/4G marker, 172 KB load module + 383 KB appended region |
 | `C:\Arbeit\F030LOL` (LOL) | Lands of Lore: The Throne of Chaos (1994) | 16-bit MZ, Borland runtime/overlay manager; CD `LANDS.EXE` has 0x2800 + 0x21300 + 0x33985, installed `MAIN.EXE` has an `FBOV` tail |
 | `C:\Arbeit\F030MagicCarpet` (MC) | Magic Carpet (1994/1995) | Watcom DOS/4G MZ stub + LE protected-mode image; `CARPET.EXE` has a 0x60-byte stub header, 0x2932-byte MZ load module and 0xABF6F-byte appended region containing the LE payload |
-| `C:\Arbeit\F030WC1` (WC1) | Wing Commander (1990) | 302 KB 16-bit MZ, Borland TC++ 1990 — **not disassembled**: the authority is the `../wc1-re` source reconstruction, with `WC.EXE` kept as tiebreaker |
+| `C:\Arbeit\F030WC1` (WC1) | Wing Commander (1990) | 302 KB 16-bit MZ, Borland TC++ 1990 — `WC.EXE` is the authority; `../wc1-re` is a 1996 Win32 reconstruction used as graded supporting evidence |
 
-WC1 is in this table for one reason: it is the family's worked example of the
-*other* way in, and §1–§4a mostly do not apply to it. What does apply is the
-part of the discipline that is about evidence rather than about x86 — §4's
-ladder, §5's bookkeeping, and METHOD.md §4.2's ranking of citations, which now
-has a rank for a recovered source tree and two questions to answer before
-using one. Read that before treating a reconstruction as ground truth.
+WC1 is in this table because it is the family's worked example of a helpful but
+non-authoritative reconstruction. Its 1996 Win32 source can accelerate reading
+the 1990 DOS build, but the DOS binary decides behaviour. METHOD.md §4.2
+requires the reconstruction's build and fidelity grade to be cited in the
+function record, and any difference to be resolved against DOS evidence.
 
 The other ten hit the same problems in different orders. This document collects the
 techniques that transfer, each attributed to where it was learned so the
@@ -359,6 +360,15 @@ In increasing order of strength:
    boundary, the relocation format, the segment layout, the container arithmetic.
    Nothing else in this list is that comprehensive. UW1 does it in 25 s (§4a).
 
+**Keep storage geometry separate from display geometry.** A resource header may
+carry a visible mode, a stored pitch/maxima, an allocation capacity, and a
+palette or other tail at different boundaries. Derive the decoded extent and
+termination from the original consumer's read loop plus corpus invariants;
+record stored width/height, visible viewport, capacity, and tail separately.
+Comanche's `CONSOL1S.DTA` caught this: its header says 320x200 for the VGA
+display, but the consumer decodes a 328x290, 95,120-byte surface before a
+separate 769-byte palette tail.
+
 **Statistics separate code from data cheaply.** Opcode frequency: `call` at
 1.9 % and `ret` at 1.0 % in real F29 program text against 0.29 % and 0.15 % in
 the archives — an order of magnitude, enough to settle whether a file contains
@@ -659,6 +669,68 @@ load-bearing policies, so their names are known here:
   may not be used to justify a second assumption. Keep every legitimate DOS,
   BIOS and hardware substitution in one closed, project-local list and review
   that list as a whole whenever it changes.
+- **m68k output is assembled and measured, never guessed.** `m68k` is a family,
+  not a target declaration: every 68000-side routine records the exact CPU
+  (MC68000/020/030/etc.), assembler or compiler and version, syntax, ABI,
+  calling convention, memory/alignment and privilege assumptions, and output
+  format. The declared toolchain must be configured for that CPU and must fail
+  unsupported instructions/addressing modes. Retain the source, build command
+  or configuration, object/binary hash, and assembler/compiler listing or
+  disassembly. Before the routine is called a target counterpart, run its
+  contract fixtures in the declared 68k emulator or on the Falcon target and
+  compare canonical outputs and side effects. A hand-written snippet that has
+  not passed these gates is `Illustrative`, not `Ported` or `Verified`; a
+  passing JavaScript fixture proves behavior at the contract boundary, not
+  m68k instruction legality or execution. Shared code targets the lowest
+  declared CPU; CPU-specific extensions belong in the target seam with their
+  fallback boundary recorded.
+- **The DOS binary is the behavioural authority; the complete function
+  inventory is preserved.** Every recovered DOS function remains in the
+  project's durable inventory, whether it is implemented in the browser,
+  68000, both, or neither yet. `Identified`, `Unproven`, `Ported`, `Verified`
+  and explicit out-of-scope statuses are acceptable; silently dropping a
+  function or replacing it without a record is not. For every function that
+  enters the browser or target path, maintain its hashed DOS identity,
+  recovered contract, fixtures, implementation symbols and a difference
+  ledger against DOS. State and prove even “no difference”; unresolved
+  differences are `Unproven`. A recovered source tree, decompiler result or
+  reassembly is supporting evidence and must never overrule the selected DOS
+  executable.
+- **Link implementation source to the disassembled function.** Every
+  JavaScript/browser and 68000/m68k function source that implements or exposes
+  a recovered DOS function carries an adjacent comment or docstring linking to
+  the durable function record and naming the disassembled DOS function symbol
+  plus canonical range/entry. Use the same stable function ID in the record and
+  both implementation sources; a separate map or file-level comment is not
+  enough. Code with no DOS counterpart says `N/A - platform replacement` or
+  `Target artefact` at the definition.
+- **A deterministic, playable browser/JavaScript game runtime is mandatory.**
+  Start it with the first ported function and land its fixtures before or with
+  every supported Falcon slice. The browser page itself is the game/reference
+  runtime: it boots the DOS-derived data boundary, runs the deterministic game
+  loop, accepts input and presents the logical framebuffer, events and audio
+  model. A diagnostic asset viewer or isolated canvas demo may accompany it but
+  cannot satisfy this rule. It is the day-to-day differential laboratory, not a
+  replacement for DOS capture or real-target validation; Canvas output is
+  diagnostic, while raw/canonical state, event and framebuffer fixtures are the
+  oracle. Use its controllable experiments to identify a function's role,
+  contract, state effects and target seam, but promote a finding only after DOS
+  evidence supports it.
+- **The browser port must be connected game flow, not a test-page collection.**
+  Every function marked supported must be wired into the same browser runtime
+  with all earlier supported functions. The page must boot without a
+  developer-only harness, accept its declared input path and reach the game's
+  real startup flow — at minimum the main menu or a deterministic attract-mode
+  loop, whichever the DOS build exposes first. Record ordered ticks/inputs,
+  state checkpoints, logical framebuffer/page hashes and emitted events for that
+  flow. An isolated function may remain `Identified` or `Unproven`, but it is not
+  part of the supported browser port until this connected-flow gate passes.
+- **Browser file access goes through a virtual DOS filesystem.** The semantic
+  core uses deterministic named-byte-file `open`/`read`/`seek`/`tell`/`close`
+  semantics. IndexedDB may persist imported binaries, caches and saves;
+  `localStorage` is metadata-only; fetch/file-picker APIs are host import
+  adapters and never semantic dependencies. Cache hits and fresh imports must
+  expose the same bytes, hashes, paths, positions and errors.
 - **Two things that are also invention**, and neither looks like it while you
   are writing it. *A guard the original does not have* — a clamp or range
   check added for safety is a second behaviour for input nobody has checked
@@ -674,12 +746,12 @@ load-bearing policies, so their names are known here:
 - **Rank the citation, because a citation is only as strong as the
   disassembly behind it.** An address in a region nobody proved was code is a
   guess wearing ground truth's clothes, and Ghidra returns a plausible
-  `FUN_xxx+0y` for any address you ask about. Four ranks, named in the routine
+  `FUN_xxx+0y` for any address you ask about. Four evidence ranks, named in the function record:
   header: **executed** under telemetry (§6) is strongest, **covered by the
   reassembly ratchet** (§4a) is strong, **reached only by a sweep's
   inference** (§1) is weakest and says so, and a **recovered source tree** is a
-  fourth kind that has to declare *which build* it reconstructs and *what its
-  fidelity grade is* before it can be cited at all.
+  fourth kind of supporting evidence that has to declare *which build* it
+  reconstructs and *what its fidelity grade is* before it can be cited at all.
   Porting from a weak rank is allowed; presenting it as a strong one is not.
 - **Behaviour is not build-selectable** (CMN's rule). A flag that selects
   between two candidate behaviours is a decision that has not been made, and it
