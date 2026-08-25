@@ -2,6 +2,14 @@
 ; 68030-only 3D pipeline (transform, clip, project, depth-sort)
 ; -----------------------------------------------------------------------------
 ;
+; Provenance: TARGET ARTEFACT / N/A - platform replacement. The DOS authority
+; is X.EXE SHA-256 e47717e4dc5f3903a45aa305a1839e21be0e030439984230513cac5ddd259b2c,
+; but this file is not a translation of DOS 0x1F3A or 0x3160. Its design
+; reference is sibling f030dsp3d/src/3d.asm SHA-256
+; 3caaca03b21171667b2cda33c65cdc813b9d8c4d6d1df049ce620d4a372e2ec0.
+; Observable contract: emit the same logical span-list shape consumed by
+; draw_poly_hc_l; Q1.23 and tenth-degree angles are renderer conventions.
+;
 ; Phase 1 of the port: replaces the DSP56001 round trip (src/dsp/3d.asm,
 ; parked untouched for phase 2) with the equivalent geometry work done
 ; directly on the 68030. Feeds draw_poly_hc_l (src/dp_hc.s) exactly the

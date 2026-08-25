@@ -2,6 +2,12 @@
 ; polygon routine (c) 1994 by Sascha Springer
 ; ----------------------------------
 
+; Provenance: TARGET ARTEFACT / N/A - platform replacement. Adapted from the
+; sibling Falcon raster path; it has no DOS canonical address. Observable
+; contract: consume the logical left/right span list and write RGB565 pixels
+; to the Falcon framebuffer. See docs/ARCHITECTURE.md and the golden-frame
+; hash in docs/ENGINE.md.
+
     global draw_poly_hc_l, screen_low_high_work, screen_low_high_display
 
 ; ----------------------------------

@@ -20,22 +20,26 @@ here — that work exists to understand what the original shows and where the
 values come from, not to be redrawn pixel for pixel. This HUD is a fresh
 design against the same underlying data.
 
-## The numbers are placeholders
+## The numbers come from the flight-state seam
 
-`hud_airspeed`, `hud_altitude` and `hud_heading` are driven by `frame_count`
-in `hud_draw`, not by a flight model — there isn't one in 68k yet (task 6).
-The formulas exist only to produce visibly live, independently checkable
-numbers:
+`hud_airspeed`, `hud_altitude` and `hud_heading` are now sourced from the
+DOS-width state fields in `src/flight.s`. The initial state matches the DOS
+reset path:
 
 ```
-airspeed = 3200 + frame_count            (then displayed >> 3)
-altitude = 3000 + (frame_count >> 2)     (then displayed << 2)
-heading  = (1024 + frame_count) & $7FF   (then converted to a bearing)
+airspeed = flight_airspeed                (then displayed >> 3)
+altitude = flight_altitude - 20            (then displayed << 2)
+heading  = flight_heading & $7FF           (then converted to a bearing)
 ```
 
-Wiring these to the real simulation is follow-on work once task 6 lands —
-`hud_airspeed`/`hud_altitude`/`hud_heading` are the integration point, and
-their units already match, see below.
+The altitude display applies the DOS ground reference before the final scale:
+`(flight_altitude - 20) * 4`, so the reset value 3000 displays as 11,920 ft.
+
+The active state path now owns the DOS-sized fields, VBL timing, input latch,
+thrust/drag integration, attitude, and 16.16 position accumulators. The exact
+sine and manoeuvre tables are copied into `src/flight_tables.s`; the HUD stays
+on the integer high words so its units remain unchanged. Dynamics activate on
+the first control input, preserving the stable reset/demo frame.
 
 ## What is faithful to the original already
 
@@ -82,12 +86,12 @@ Worth remembering before chasing a discrepancy in anything this font prints.
 bash tools/grab-frame.sh 1500 build/frame.png
 ```
 
-The three fields should be mutually consistent — each can be inverted back to
-a `frame_count` value, and all three should agree — which is a cheap
-correctness check that does not depend on reading the tiny font precisely
-(crop and upscale the PNG for that, given the misreadings above). At VBL 1500
-in the build this was written against: airspeed 456, altitude 12452, heading
-101, all consistent with `frame_count` in the low 450s.
+At startup the expected values are 400 kt, 11,920 ft and a 180-degree bearing
+(the DOS heading value 1024, due south). A controlled Hatari probe with throttle
+500 and Arrow-Up held the active state at 8191 internal speed, raised altitude
+from 3000 to 3235 over 200 VBLs, and reached pitch 3200 with load 13. This is a
+port-side dynamics check; the unresolved DOS device and stall branches still
+need an oracle trace.
 
 ## Open
 

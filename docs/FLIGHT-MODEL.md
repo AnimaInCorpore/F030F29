@@ -906,8 +906,10 @@ to widen coverage can quietly turn them into code.
 | `0x54D5`-`0x551C` | 72 | speed envelope, reference/minimum, 9 altitudes x 8 load factors |
 | `0x551D`-`0x5564` | 72 | speed envelope, ceiling, same index |
 
-The values themselves are game data and stay out of this repository; the asset
-converter reads them at build time on the user's machine.
+The port carries these four exact regions in `src/flight_tables.s`, preserving
+the DOS byte order and widths. The device/stall flags that select additional
+speed penalties and the final energy/departure branches are still separate
+work, so the table presence should not be read as full model completion.
 
 ## Open
 

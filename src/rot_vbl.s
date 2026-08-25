@@ -1,6 +1,6 @@
 ; standard vbl interrupt routine (c) 1994 by Sascha Springer
 
-	global vbl
+	global vbl, vbl_tick
 
 	text
 
@@ -33,6 +33,7 @@ vbl
 	add		#0,4(a0)
 
 	addq.l	#1,$466.w
+	addq.l	#1,vbl_tick
 
 	movem.l	(a7)+,d0-a6
 	
@@ -76,5 +77,12 @@ v_ok3a
 
 v_ok3
 	rts
+
+	bss
+
+; Monotonic VBL clock for the simulation. Unlike $466.w, this is never
+; cleared by the main-loop handshake.
+vbl_tick
+	ds.l	1
 
 	end

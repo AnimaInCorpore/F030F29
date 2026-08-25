@@ -217,6 +217,24 @@ passes are needed because Hatari's `savebin` cannot dereference a pointer. The
 address is stable for a given build but moves whenever the BSS layout changes,
 so it is never hard-coded.
 
+### Golden frame
+
+**Status: RESOLVED (2026-08-24).** With the current release build (`f29.tos`
+SHA-256 `280dbc936616b833cbfa0c868dea5fb09b041ad15a37c6cb36962641410ed2f6`)
+and a capture at VBL 1500, the flight-state HUD is stable at 400 kt,
+11,920 ft and 180 degrees. The existing development readout in the first five
+scanlines contains VBL-sampled object/frame-rate counters, so those 3,200 bytes
+can vary between host runs. The raw `release/frame.bin` hash is stable across
+two captures:
+
+```text
+94d35e067498088e0c90ff0a357180ad478ef3b61432981bb81570436232273
+```
+
+The rendered body (scanlines 5-239, 150,400 bytes) also hashes stably to
+`0966fac3ac3eb69bd4131e0700dd15d2ef34764397fad158cd6ccf6f943f9893`. The PNG
+is convenient for inspection, but the raw framebuffer is the regression check.
+
 ## Two traps worth remembering
 
 **68k shift and `addq` immediates only go up to 8.** Placing the five red bits

@@ -55,6 +55,7 @@ far is written up in `docs/`:
 | [DOS-ORACLE.md](docs/DOS-ORACLE.md) | running the *original* DOS game headless in QEMU, to check the port against |
 | [X86DISASSEMBLE.md](docs/X86DISASSEMBLE.md) | how to go about disassembling a DOS binary, from what this one cost |
 | [RE-WORKFLOW.md](docs/RE-WORKFLOW.md) | picking this up cold — tools, the session workflow, patterns and traps |
+| [REASSEMBLY.md](docs/REASSEMBLY.md) | byte-exact X.EXE reassembly ratchet and residue inventory |
 | [CROSS-PROJECT.md](docs/CROSS-PROJECT.md) | techniques shared by the eleven projects in `../F030Method/README.md` — generated from the parent repository |
 | [RE-NOTES.md](docs/RE-NOTES.md) | `X.EXE` memory layout, resolved indirect dispatchers, inline-string idiom |
 | [ARCHIVE-FORMAT.md](docs/ARCHIVE-FORMAT.md) | container format of `RETAL.00` / `RETAL.01` |
@@ -74,6 +75,7 @@ All in `tools/re/`, Python 3 with [capstone](https://www.capstone-engine.org/):
 |---|---|
 | `mzinfo.py` | MZ header, relocations, segment layout |
 | `disasm.py` | recursive-descent disassembler with constant propagation and automatic inline-string detection |
+| `reasm.py` | byte-exact NASM reassembly ratchet for the complete `X.EXE` |
 | `codemap.py` | separates code from data by windowed analysis |
 | `peek.py` | disassemble or dump an arbitrary address |
 | `xref.py` | find callers of an address by scanning raw bytes |
@@ -166,13 +168,13 @@ The reverse engineering is broad: the archive, the compression, the image,
 model and world formats and the sound driver are all decoded, and the
 disassembly reaches 44.6 % of `X.EXE`.
 
-The port itself has just started. The engine renders an F29 scene - a model
-library plus placed instances, culled and depth-sorted on the 68030, one DSP
-round trip each - over a drawn horizon at 320x240 true colour in Hatari,
+The port itself is in active reconstruction. The engine renders an F29 scene -
+a model library plus placed instances, culled and depth-sorted on the 68030,
+one DSP round trip each - over a drawn horizon at 320x240 true colour in Hatari,
 measured at **25 fps** for sixteen distant objects and **11.6 fps** for one
-that fills the screen. A HUD readout and a start menu exist (see
-[HUD.md](docs/HUD.md), [MENU.md](docs/MENU.md)); the flight model, game logic
-and cockpit panel are not written.
+that fills the screen. A HUD, start menu, and DOS-width scalar/attitude/
+position flight core exist (see [HUD.md](docs/HUD.md), [MENU.md](docs/MENU.md));
+full device/stall/game logic and the cockpit panel remain open.
 
 Measuring rather than calculating already paid for itself once. The first
 bottleneck was not the video mode the arithmetic pointed at, but the fact that

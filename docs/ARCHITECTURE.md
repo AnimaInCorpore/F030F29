@@ -1,5 +1,40 @@
 # Architecture
 
+## Fidelity boundary and provenance
+
+The DOS authority for behavioural work is `X.EXE`, SHA-256
+`e47717e4dc5f3903a45aa305a1839e21be0e030439984230513cac5ddd259b2c`. The
+simulation side must preserve the original widths and tables: the flight model
+uses 8.8 frame timing, a 1024-entry signed sine table, and 10-bit angles
+pre-doubled when indexing that table (see [FLIGHT-MODEL.md](FLIGHT-MODEL.md)).
+Those conventions are not interchangeable with the renderer's convenient
+fixed-point representation.
+
+The geometry path currently in `src/` is explicitly a **Target artefact**. It
+is a Falcon implementation adapted from the sibling reference
+`f030dsp3d/src/3d.asm`, SHA-256
+`3caaca03b21171667b2cda33c65cdc813b9d8c4d6d1df049ce620d4a372e2ec0`, not a
+translation of DOS `0x1F3A`'s rotation builder or `0x3160`'s object sorter.
+The CPU path uses Q1.23 values and tenth-degree angles; the DSP path uses its
+own 24-bit fixed-point representation. Neither claims DOS simulation
+fidelity. The preserved observable contract is the logical span list consumed
+by the Falcon filler:
+
+| Path | Classification | DOS canonical range | Contract / evidence |
+|---|---|---|---|
+| `src/cpu3d.s` | Target artefact | N/A - platform replacement | transformed, clipped, projected span data; checked against the sibling geometry design |
+| `src/dsp/3d.asm` | Target artefact | N/A - platform replacement | same span-list contract; adapted for 320x240; sibling design reference above |
+| `src/dp_hc.s` | Target artefact | N/A - platform replacement | span list to RGB565 framebuffer; verified by the golden-frame hash in [ENGINE.md](ENGINE.md) |
+
+The flight-state seam now sits beside this renderer boundary in `src/flight.s`.
+It preserves the DOS-width fields and 8.8/clamped frame timing, uses the exact
+DOS sine and manoeuvre tables copied into `src/flight_tables.s`, and ports the
+scalar thrust/drag, attitude and 16.16 position updates. Active flight state is
+also converted into the renderer's camera position and orientation. The speed
+reference/ceiling tables, device flags and stall/departure side effects remain
+open; a renderer match is not evidence that those parts of the numeric model
+are original.
+
 ## Splitting work between the 68030 and the DSP56001
 
 The sibling project [`f030dsp3d`](../../f030dsp3d) contains a complete, working

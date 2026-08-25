@@ -9,6 +9,7 @@
 	global receive_data, colour_table, buffer, sincos
 
 	global scene_render, scene_loaded, scene_visible_count
+	global flight_sync_view
 
 	global frame_count, chars
 
@@ -253,6 +254,7 @@ m_loop1a
 	dbra	d7,m_loop1a
 
 	bsr		hud_init
+	bsr		flight_init
 ;	bsr		menu_init	; TEMP: disabled during cpu3d.s development, see task list
 
 ; -----------------------------------------------------------------------------
@@ -277,6 +279,8 @@ m_loop2
 	bra		.buffer_swap
 
 .no_menu
+	bsr		flight_step
+
 	move.l	object,a0
 	addq	#6,a0
 	lea		mouse_x,a1
@@ -285,6 +289,7 @@ m_loop2
 	bsr		move_object
 
 	bsr		move_camera
+	bsr		flight_sync_view
 
 	move.l	work_screen,a0
 	bsr		draw_horizon

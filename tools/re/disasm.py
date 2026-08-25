@@ -52,6 +52,12 @@ JUNK_OPS = {"aaa", "aad", "aam", "aas", "daa", "das", "into", "salc", "hlt",
 # resolve_register_calls for why the list is this short.
 FUNCTION_POINTER_REGS = {"bp"}
 
+# The flat image is one 64 KiB segment followed by the separately addressed
+# tail segment assembled at paragraph 0x1000.  Keep this explicit: callers
+# that scan raw bytes must convert a flat offset back into the same logical
+# segment vocabulary as recursive descent.
+TAIL_SEGMENT = 0x1000
+
 # Regions proven to be data elsewhere in the analysis (see docs/RE-NOTES.md and
 # docs/ARCHIVE-FORMAT.md).  Anything that widens the sweep has to leave these
 # alone; if the disassembler starts "reaching" them it is manufacturing code out

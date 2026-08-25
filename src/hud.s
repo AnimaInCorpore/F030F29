@@ -8,9 +8,10 @@
 ; original is reproduced here - see docs/GAME-LOOP.md for that reverse-
 ; engineering work and why it stays out of this repository.
 ;
-; The values are placeholders driven by frame_count, not the real flight
-; model - that is a separate, larger port (see docs/FLIGHT-MODEL.md for the
-; equations once it lands). What is faithful to the original already:
+; The values come from the DOS-width flight state seam in flight.s. The full
+; aircraft dynamics are still a separate, larger port (see
+; docs/FLIGHT-MODEL.md), but the HUD no longer invents motion from frame_count.
+; What is faithful to the original already:
 ;
 ;  - the units (airspeed 8 per knot, altitude 4 ft per unit, heading 2048
 ;    units to the circle);
@@ -46,17 +47,9 @@ hud_init
 
 ; Call once per frame, after everything else has drawn into work_screen.
 hud_draw
-	move.l	frame_count,d0
-	add		#3200,d0
-	move	d0,hud_airspeed
-
-	move.l	frame_count,d0
-	lsr.l	#2,d0
-	add		#3000,d0
-	move	d0,hud_altitude
-
-	move.l	frame_count,d0
-	add		#1024,d0
+	move	flight_airspeed,hud_airspeed
+	move	flight_altitude,hud_altitude
+	move	flight_heading,d0
 	and		#$7ff,d0				; wrap at 2048, the circle
 	move	d0,hud_heading
 
@@ -73,6 +66,7 @@ hud_draw
 	move.l	work_screen,a0
 	lea		HUD_ALTITUDE_X+HUD_ALTITUDE_Y*SCREEN_WIDTH*2(a0),a0
 	move	hud_altitude,d0
+	sub		#20,d0				; DOS ground reference: -20 -> 0 ft
 	ext.l	d0
 	lsl.l	#2,d0
 	move	#5,d1

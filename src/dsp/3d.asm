@@ -3,6 +3,13 @@
 ; (c) 1994 by Sascha Springer
 ; -----------------------------------------------------------------------------
 
+; Provenance: TARGET ARTEFACT / N/A - platform replacement. This is adapted
+; from sibling f030dsp3d/src/3d.asm, SHA-256
+; 3caaca03b21171667b2cda33c65cdc813b9d8c4d6d1df049ce620d4a372e2ec0. It is
+; not a translation of DOS X.EXE; the DOS behavioural authority is documented
+; in docs/ARCHITECTURE.md. Observable contract: produce the logical span list
+; consumed by the Falcon 68030 filler.
+
 	include	'ioequ.inc'
 
 SCREEN_WIDTH 	= 320
@@ -2298,4 +2305,3 @@ rt_loop1
 ; -----------------------------------------------------------------------------
 	end
 ; -----------------------------------------------------------------------------
-
