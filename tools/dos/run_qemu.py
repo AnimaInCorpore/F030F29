@@ -269,8 +269,13 @@ def main():
                 '-device', 'ide-cd,drive=cd0,bus=ide.1,unit=0']
     print('$', ' '.join(cmd), '\n')
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True)
+    # QEMU's stdout goes to a file, not a pipe: nobody drains a pipe during
+    # the run, so a chatty QEMU (-d flags, warnings) fills the 64 KB buffer
+    # and blocks mid-run -- which presents as a guest hang.
+    qemu_log = os.path.join(OUTDIR, 'qemu_stdout.log')
+    stale(qemu_log)
+    log_fh = open(qemu_log, 'wb')
+    proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
     qmp = Qmp(qmp_port)
     t0 = time.time()
     rc = None
@@ -305,7 +310,12 @@ def main():
               f'({"clean QUIT.COM" if rc == CLEAN_EXIT else "UNEXPECTED"}) '
               f'after {time.time() - t0:.1f}s ---')
     qmp.close()
-    out = proc.stdout.read()
+    log_fh.close()
+    if args.keep_running and rc is None:
+        # Do not wait on a process we deliberately left running.
+        print(f'--- QEMU left running (QMP port {qmp_port}); '
+              f'its output accumulates in {qemu_log} ---')
+    out = open(qemu_log, encoding='utf-8', errors='replace').read()
     if out.strip():
         print('--- qemu stdout ---\n' + out)
 

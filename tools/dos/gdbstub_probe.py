@@ -51,8 +51,31 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dosimg
 
 QEMU = dosimg.host_tool('qemu-system-i386')
-FFMPEG = 'ffmpeg'
-QMP_PORT = 4556
+
+
+def free_port():
+    """Ask the OS for an unused QMP port instead of hardcoding one.
+
+    Same rule as run_qemu.py: the sibling projects run this same script, and a
+    fixed port meant two concurrent runs fought over it and one died in a way
+    that looked like a guest crash."""
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
+def stale(*paths):
+    """Delete previous runs' artefacts before asking QEMU for new ones.
+
+    OUTDIR persists between runs and the tags repeat (`round1`, `key1_esc`),
+    so a capture that never arrives would otherwise be answered by the *last*
+    run's file -- silently, and looking exactly like a successful capture.
+    """
+    for p in paths:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 
 def project_root():
@@ -80,7 +103,11 @@ def default_hdd():
     sidecar count, so a leftover hand-built disk in img/ cannot be picked up by
     accident (this is how UW1's dead dos622.hdd once won a plain glob)."""
     img = os.path.join(ROOT, 'img')
-    cands = sorted(f for f in os.listdir(img)
+    try:
+        entries = os.listdir(img)
+    except OSError:
+        return None            # no img/ yet -- main() reports what to build
+    cands = sorted(f for f in entries
                    if f.endswith('.hdd')
                    and os.path.exists(os.path.join(img, f + '.geom.json')))
     return os.path.join(img, cands[0]) if cands else None
@@ -192,8 +219,12 @@ def pick_signatures(exe, tail_start, count=8):
 
 
 def kill_strays():
-    """A probe that crashed mid-run orphans its QEMU, which holds the ports; a
-    fresh run then dies with 'Failed to find an available port'.  Clean up."""
+    """Kill every qemu-system-i386 on the host -- including runs belonging to
+    *sibling projects*, which is why this is opt-in (`--kill-strays`) and no
+    longer runs unconditionally: a probe here used to silently destroy a
+    concurrent run_qemu.py/run_trace.py next door, and the victim saw exactly
+    the 'guest crashed' signature this was meant to clean up after.  Use it
+    only when a crashed probe's orphan is actually in the way."""
     try:
         if os.name == 'nt':
             subprocess.run(['taskkill', '/F', '/IM', 'qemu-system-i386.exe'],
@@ -347,10 +378,22 @@ def main():
                     help='HMP sendkey after round 1, then sample again')
     ap.add_argument('--chase', type=int, default=0, metavar='N',
                     help='N samples hunting for code outside the loaded image')
+    ap.add_argument('--kill-strays', action='store_true',
+                    help='kill every qemu-system-i386 on the host first. '
+                         'Off by default: it also kills sibling projects\' '
+                         'concurrent runs.')
     args = ap.parse_args()
 
+    if not args.hdd:
+        sys.exit('no *.hdd with a .geom.json sidecar in img/ -- build one '
+                 'with work/build_dos_hdd.py (or pass --hdd)')
+    if not args.exe:
+        sys.exit('no MZ .EXE found under work/expanded, work/extracted, game '
+                 'or assets/extracted -- pass --exe')
     os.makedirs(OUTDIR, exist_ok=True)
-    kill_strays()
+    if args.kill_strays:
+        kill_strays()
+    qmp_port = free_port()
     cyls, heads, secs, _part_off = geometry(args.hdd)
     cmd = [QEMU, '-M', 'pc', '-cpu', '486', '-m', '16',
            '-drive', f'file={args.hdd.replace(chr(92), "/")},format=raw,'
@@ -359,22 +402,34 @@ def main():
                       f'cyls={cyls},heads={heads},secs={secs}',
            '-boot', 'c', '-display', 'none', '-vga', 'std', '-no-reboot',
            '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
-           '-qmp', f'tcp:127.0.0.1:{QMP_PORT},server=on,wait=off']
+           '-qmp', f'tcp:127.0.0.1:{qmp_port},server=on,wait=off']
     print('$', ' '.join(cmd), '\n')
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True)
+    # stdout to a file, not a pipe: nothing drains a pipe during the run, so a
+    # chatty QEMU would fill the 64 KB buffer and block -- looking exactly
+    # like a wedged guest.
+    qemu_log = os.path.join(OUTDIR, 'probe_qemu_stdout.log')
+    stale(qemu_log)
+    log_fh = open(qemu_log, 'wb')
+    proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
     atexit.register(lambda: proc.kill() if proc.poll() is None else None)
+
+    def qemu_out():
+        log_fh.flush()
+        try:
+            return open(qemu_log, encoding='utf-8', errors='replace').read()
+        except OSError:
+            return ''
 
     t0 = time.time()
     while time.time() - t0 < args.wait:
         if proc.poll() is not None:
-            sys.exit('QEMU died before the wait elapsed:\n' + proc.stdout.read())
+            sys.exit('QEMU died before the wait elapsed:\n' + qemu_out())
         time.sleep(0.5)
 
     qmp = None
     for _ in range(20):
         try:
-            qmp = Qmp(QMP_PORT)
+            qmp = Qmp(qmp_port)
             break
         except OSError:
             time.sleep(0.5)
@@ -410,12 +465,27 @@ def main():
     def screenshot(tag):
         ppm = os.path.join(OUTDIR, f'probe_{tag}.ppm')
         png = os.path.join(OUTDIR, f'probe_{tag}.png')
+        # Delete the previous run's files first: the tags repeat between
+        # runs, so a screendump that never arrives would otherwise be
+        # answered by the *last* run's picture and reported as this run's
+        # evidence -- the hardest staleness to notice.
+        stale(ppm, png)
         qmp._cmd({'execute': 'screendump', 'arguments': {'filename': ppm}})
-        time.sleep(1.0)
-        if os.path.exists(ppm):
-            subprocess.run([FFMPEG, '-y', '-loglevel', 'error', '-i', ppm, png],
-                           capture_output=True)
-            print(f'screenshot: {png}')
+        for _ in range(30):
+            if os.path.exists(ppm) and os.path.getsize(ppm) > 0:
+                break
+            time.sleep(0.2)
+        if not os.path.exists(ppm):
+            print('screenshot: <none -- screendump produced no file>')
+            return
+        # PPM is already a readable capture; PNG is a convenience.  A missing
+        # ffmpeg must not take the probe down -- hand back the PPM instead.
+        try:
+            subprocess.run([dosimg.host_tool('ffmpeg'), '-y', '-loglevel',
+                            'error', '-i', ppm, png], capture_output=True)
+        except (OSError, SystemExit):
+            pass
+        print(f'screenshot: {png if os.path.exists(png) else ppm}')
 
     # ---- raw registers once, so the parse can be eyeballed ----------------
     raw = qmp.hmp('info registers')
@@ -433,9 +503,16 @@ def main():
           f'0x00000..0xA0000 in 16 KB chunks (15 B overlap) ---')
     found = {}
     carry = b''
+    unread = 0
+    nchunks = 0
     for base in range(0x00000, 0xA0000, 0x4000):
+        nchunks += 1
         d = xp(base, 0x4000)
         if len(d) != 0x4000:
+            # An unreadable chunk is a hole in the search, not evidence of
+            # absence -- count it so 'NOT FOUND' below can be qualified.
+            unread += 1
+            carry = b''
             continue
         blob = carry + d                 # overlap: a hit may straddle a chunk
         for label, off in sigs:
@@ -447,23 +524,39 @@ def main():
         carry = d[-15:]
         if len(found) == len(sigs):
             break
+    if unread:
+        print(f'  !! {unread} of {nchunks} 16 KB chunks unreadable over QMP -- '
+              f'treat NOT FOUND below as inconclusive, not as overwritten')
     for label, off in sigs:
         state = (f'delta {found[label]:#07x}' if label in found
-                 else 'NOT FOUND in RAM (overwritten at runtime?)')
+                 else ('NOT FOUND in readable RAM (unreadable chunks above?)'
+                       if unread else
+                       'NOT FOUND in RAM (overwritten at runtime?)'))
         print(f'  {label:24s} file {off:#07x}  {exe[off:off + 8].hex(" ")}…  '
               f'{state}')
 
-    # Majority vote: a window can legitimately be missing (already overwritten),
-    # so require agreement among those found rather than all of them.
-    votes = collections.Counter(found.values())
-    deltas = {votes.most_common(1)[0][0]} if votes else set()
-    if votes and votes.most_common(1)[0][1] >= max(2, len(found) // 2):
-        delta = deltas.pop()
-        agree = votes[delta]
+    # Majority vote among the located *image* signatures.  A window can
+    # legitimately be missing (already overwritten), so require a strict
+    # majority of those found rather than all of them -- a tie proves
+    # nothing, and the old `>= len//2` accepted a 4-4 split with insertion
+    # order deciding the winner.  The overlay-pool window never votes: an
+    # overlay pool's runtime address is legitimately different per load
+    # (find_overlay_pool's own docstring), so it can only distort the vote.
+    POOL_LABEL = 'overlay pool / tail'
+    image_found = {k: v for k, v in found.items() if k != POOL_LABEL}
+    votes = collections.Counter(image_found.values())
+    top = votes.most_common(1)
+    if top and top[0][1] >= 2 and top[0][1] * 2 > len(image_found):
+        delta, agree = top[0]
         hdr = int.from_bytes(exe[0x08:0x0A], 'little') * 16   # e_cparhdr*16
         load_seg = (delta + hdr) >> 4        # the load module starts at `hdr`
+        pool_note = ''
+        if POOL_LABEL in found:
+            pool_note = (f'; pool window at delta {found[POOL_LABEL]:#07x} '
+                         f'excluded from the vote')
         print(f'\n*** file -> linear delta = {delta:#07x} '
-              f'({agree} of {len(found)} located signatures agree)')
+              f'({agree} of {len(image_found)} located image signatures agree'
+              f'{pool_note})')
         print(f'*** load module base   = {delta + hdr:#07x} '
               f'(segment {load_seg:#06x}, PSP {load_seg - 0x10:#06x})')
         if tail_start:
@@ -474,7 +567,8 @@ def main():
               f'= Ghidra segment (offsets unchanged)')
     else:
         delta = None
-        print(f'\n!! inconsistent or missing signatures: {found} -- '
+        print(f'\n!! no strict majority among located image signatures '
+              f'(a tie or too few hits): {found} -- '
               f'cannot calibrate; EIP samples stay unsymbolicated')
 
     # ---- is the whole file really resident at `delta`? --------------------
@@ -487,12 +581,15 @@ def main():
         hdr = int.from_bytes(exe[0x08:0x0A], 'little') * 16
         for label, lo, hi in (('image', hdr, tail_start or len(exe)),
                               ('tail ', tail_start or len(exe), len(exe))):
-            same = diff = 0
+            same = diff = unreadable = 0
             first_bad = None
             for f_off in range(lo, hi, 0x1000):
                 want = exe[f_off:f_off + 16]
                 got = xp(f_off + delta, 16)
                 if not got:
+                    # A failed QMP read is not a mismatch and not a match --
+                    # count it, or the percentage quietly changes denominator.
+                    unreadable += 1
                     continue
                 if got == want:
                     same += 1
@@ -502,7 +599,8 @@ def main():
                         first_bad = (f_off, want, got)
             total = same + diff
             pct = 100.0 * same / total if total else 0.0
-            print(f'  {label}: {same}/{total} windows match ({pct:.0f}%)')
+            note = f', {unreadable} unreadable' if unreadable else ''
+            print(f'  {label}: {same}/{total} windows match ({pct:.0f}%){note}')
             if first_bad:
                 f_off, want, got = first_bad
                 print(f'    first mismatch at file {f_off:#07x} '
@@ -558,7 +656,11 @@ def main():
             print('  (no sample landed outside the image this run)')
 
     if args.chase:
-        chase(args.chase)
+        if delta is None:
+            print('--- chase skipped: calibration failed, there is no '
+                  'file->linear delta to test candidate bytes against ---')
+        else:
+            chase(args.chase)
 
     # ---- EIP histogram ----------------------------------------------------
     def round_of_samples(tag):
@@ -618,11 +720,15 @@ def main():
         proc.kill()
     except OSError:
         pass
-    out = proc.stdout.read()
+    log_fh.close()
+    out = qemu_out()
     if out.strip():
         print('--- qemu stdout ---\n' + out)
-    print('done')
+    print('done' if delta is not None else 'done (UNCALIBRATED)')
+    # Exit status says whether calibration succeeded, so an automated caller
+    # can tell a good run from an uncalibrated one.
+    return 0 if delta is not None else 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

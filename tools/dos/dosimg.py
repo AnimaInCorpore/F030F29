@@ -53,24 +53,41 @@ import sys
 # *host* paths; the C:\... strings elsewhere in this file are DOS guest paths
 # and have nothing to do with the machine running QEMU.
 MSYS = r'C:\msys64\mingw64\bin'
+# The QEMU Windows installer's default location -- not on anyone's PATH, and
+# the reason every project's builder used to export QEMU_SYSTEM_I386 itself.
+WINQEMU = r'C:\Program Files\qemu'
+
+# Alternate binary names per canonical tool: 7-Zip ships as `7zz` on
+# macOS/Linux but as `7z.exe` (or the standalone `7za`) on Windows.
+TOOL_ALIASES = {'7zz': ('7z', '7za')}
+
+
+def _env_name(prog):
+    name = prog.upper().replace('-', '_')
+    # A POSIX shell cannot export a name starting with a digit (`7ZZ=...` is
+    # a syntax error), so such tools take a TOOL_ prefix: TOOL_7ZZ=<path>.
+    return ('TOOL_' + name) if name[:1].isdigit() else name
 
 
 def host_tool(prog):
     """Absolute path to a host helper program, or exit with how to supply it."""
-    override = os.environ.get(prog.upper().replace('-', '_'))
+    override = os.environ.get(_env_name(prog))
     if override:
         return override
-    for d in (os.environ.get('DOS_TOOLS'), MSYS):
+    names = (prog,) + TOOL_ALIASES.get(prog, ())
+    for d in (os.environ.get('DOS_TOOLS'), MSYS, WINQEMU):
         if not d:
             continue
-        for cand in (os.path.join(d, prog), os.path.join(d, prog + '.exe')):
-            if os.path.isfile(cand):
-                return cand
-    found = shutil.which(prog)
-    if found:
-        return found
-    sys.exit(f'{prog} not found on $PATH. Install it, or set '
-             f'{prog.upper().replace("-", "_")}=<path> or DOS_TOOLS=<dir>.')
+        for n in names:
+            for cand in (os.path.join(d, n), os.path.join(d, n + '.exe')):
+                if os.path.isfile(cand):
+                    return cand
+    for n in names:
+        found = shutil.which(n)
+        if found:
+            return found
+    sys.exit(f'{"/".join(names)} not found on $PATH. Install it, or set '
+             f'{_env_name(prog)}=<path> or DOS_TOOLS=<dir>.')
 
 FLOPPY_GLOB = 'Microsoft MS-DOS 6.22*'
 FLOPPY_DISKS = ('Disk1.img', 'Disk2.img')
@@ -133,6 +150,10 @@ def find_floppies(project_root=None):
                  if all(n in f for n in FLOPPY_DISKS)), None)
             if hit:
                 return hit
+            try:                # do not leave an empty img/<name>/ behind
+                os.rmdir(dest)
+            except OSError:
+                pass
 
     sys.exit(
         'genuine MS-DOS 6.22 install floppies not found.\n'
@@ -265,8 +286,11 @@ class DosImage:
         self._pending.append(('file', (local, guest)))
 
     def add_bytes(self, data, guest):
-        name = guest.rstrip('/').rsplit('/', 1)[-1]
-        p = os.path.join(self.work, 'stage_' + name)
+        # Stage under a name derived from the full guest path: two adds whose
+        # basenames collide (`/A/GAME.CFG` and `/B/GAME.CFG`) must not share
+        # one staging file, or the second write silently feeds both.
+        safe = guest.strip('/').replace('/', '_')
+        p = os.path.join(self.work, 'stage_' + safe)
         open(p, 'wb').write(data)
         self.add_file(p, guest)
 
@@ -278,10 +302,16 @@ class DosImage:
         """
         self.mkdir(guest_root)
         merged = {}
+        # Every directory of the source tree, not just ancestors of files: a
+        # directory the game expects to exist (an empty save/config dir) must
+        # get its mmd even though no file schedules it.
+        dirs = set()
         for lr in local_roots:
-            for root, _, files in os.walk(lr):
+            for root, subdirs, files in os.walk(lr):
                 rel = os.path.relpath(root, lr).replace(os.sep, '/')
                 rel = '' if rel == '.' else rel
+                for sd in subdirs:
+                    dirs.add(f'{rel}/{sd}' if rel else sd)
                 for f in files:
                     # Repository placeholders are not game assets and cannot
                     # be represented by an MS-DOS 8.3 directory entry.
@@ -291,13 +321,13 @@ class DosImage:
                     if key in merged:
                         sys.exit(f'collision merging trees: {key}')
                     merged[key] = os.path.join(root, f)
-        bad = [k for k in merged if not all(is_83(p) for p in k.split('/'))]
+        bad = [k for k in (set(merged) | dirs)
+               if not all(is_83(p) for p in k.split('/'))]
         if bad:
             sys.exit(f'not 8.3-clean, would be mangled by mcopy: {bad[:10]}')
         # Add every ancestor explicitly.  mmd does not create missing parents,
         # so a tree containing CARS/CARS93 must schedule CARS first even when
         # no file lives directly in that intermediate directory.
-        dirs = set()
         for key in merged:
             parts = key.split('/')[:-1]
             for count in range(1, len(parts) + 1):
