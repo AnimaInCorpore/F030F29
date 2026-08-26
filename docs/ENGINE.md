@@ -228,8 +228,13 @@ can vary between host runs. The raw `release/frame.bin` hash is stable across
 two captures:
 
 ```text
-94d35e067498088e0c90ff0a357180ad478ef3b61432981bb81570436232273
+94d35e0674980888e0c90ff0a357180ad478ef3b61432981bb81570436232273
 ```
+
+(Corrected 2026-08-26: the value previously recorded here was 63 hex digits —
+a dropped `8` — and nothing ran the comparison mechanically, so it went
+unnoticed. Re-verified against the retained `release/frame.bin`, whose body
+hash below still matches.)
 
 The rendered body (scanlines 5-239, 150,400 bytes) also hashes stably to
 `0966fac3ac3eb69bd4131e0700dd15d2ef34764397fad158cd6ccf6f943f9893`. The PNG
