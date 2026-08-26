@@ -294,7 +294,15 @@ class DosImage:
         bad = [k for k in merged if not all(is_83(p) for p in k.split('/'))]
         if bad:
             sys.exit(f'not 8.3-clean, would be mangled by mcopy: {bad[:10]}')
-        for d in sorted({k.rsplit('/', 1)[0] for k in merged if '/' in k}):
+        # Add every ancestor explicitly.  mmd does not create missing parents,
+        # so a tree containing CARS/CARS93 must schedule CARS first even when
+        # no file lives directly in that intermediate directory.
+        dirs = set()
+        for key in merged:
+            parts = key.split('/')[:-1]
+            for count in range(1, len(parts) + 1):
+                dirs.add('/'.join(parts[:count]))
+        for d in sorted(dirs):
             self.mkdir(f'{guest_root}/{d}')
         bydir = {}
         for k, v in merged.items():
