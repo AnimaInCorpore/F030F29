@@ -96,7 +96,7 @@ def find_floppies(project_root=None):
       4. an unextracted `Microsoft MS-DOS 6.22*.7z` in this project or a
          sibling, expanded once into this project's img/
 
-    Nothing is copied in cases 3: the sibling's directory is used in place, so
+    Nothing is copied in case 3: the sibling's directory is used in place, so
     seeding a project does not duplicate 5 MB again.  Exits with what to supply
     if none of the four finds it.
     """
@@ -456,7 +456,8 @@ def expand_autoexec(then=b'C:\\QUIT.COM\r\n'):
     return b''.join(out)
 
 
-# 446-byte MBR chain-loader assembled from work/mbr.asm:
+# MBR chain-loader assembled from work/mbr.asm (248 B of code, padded into
+# the 446-byte MBR code area by the zeroed sector buffer):
 #   nasm -f bin work/mbr.asm -o work/img_build/mbr.bin
 # Relocates to 0x0600, picks the active partition, reads its boot sector to
 # 0x7C00 via INT 13h AH=42h (LBA) with an AH=02h CHS fallback, then jumps with

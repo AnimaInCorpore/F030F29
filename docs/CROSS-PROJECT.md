@@ -13,12 +13,12 @@ tree is supporting evidence, never a replacement for the DOS oracle:
 | `C:\Arbeit\F030TieFighter` (TIE) | TIE Fighter CD (1995) | MZ stub + standard Watcom `LE` (DOS/4G), 1 MB 32-bit flat image |
 | `C:\Arbeit\F030F29` (F29) | F29 Retaliator (1990) | 68 KB hand-written 16-bit real mode |
 | `C:\Arbeit\F030Comanche` (CMN) | Comanche: Maximum Overkill (1992) | LZEXE-packed 16-bit MZ (60 KB → 378 KB unpacked): 16-bit bootstrap + 203 KB 32-bit flat program |
-| `C:\Arbeit\F030Falcon3` (F3) | Falcon 3.0 (1995) | 16-bit MZ, 118 KB load module + 1.24 MB appended overlay/auxiliary tail |
-| `C:\Arbeit\F030Links386` (L386) | Links 386 CD (1995) | MZ loader with DOS/4G marker, 172 KB load module + 383 KB appended region |
-| `C:\Arbeit\F030LOL` (LOL) | Lands of Lore: The Throne of Chaos (1994) | 16-bit MZ, Borland runtime/overlay manager; CD `LANDS.EXE` has 0x2800 + 0x21300 + 0x33985, installed `MAIN.EXE` has an `FBOV` tail |
+| `C:\Arbeit\F030Falcon3` (F3) | Falcon 3.0 (1995) | 16-bit MZ, 118 KB load module + 1.24 MB RTLink v1 overlay tail (directory decoded, runtime mapping sampled from the oracle) |
+| `C:\Arbeit\F030Links386` (L386) | Links 386 CD (1995) | 16-bit MZ loader, 0x2C524-byte image + 0x5D747-byte tail resolved as two Phar Lap 386 `P3`/EXP records (the embedded `DOS/4G` text is not the container signature) |
+| `C:\Arbeit\F030LOL` (LOL) | Lands of Lore: The Throne of Chaos (1994) | 16-bit MZ, Borland runtime/overlay manager; CD `LANDS.EXE` has 0x2800 + 0x21300 + 0x33985 (tail resolved: Borland TDS v3.16 debug data, not an overlay pool); installed `MAIN.EXE` has an `FBOV` tail (80 of 295 segments overlaid) |
 | `C:\Arbeit\F030MagicCarpet` (MC) | Magic Carpet (1994/1995) | Watcom DOS/4G MZ stub + LE protected-mode image; `CARPET.EXE` has a 0x60-byte stub header, 0x2932-byte MZ load module and 0xABF6F-byte appended region containing the LE payload |
 | `C:\Arbeit\F030WC1` (WC1) | Wing Commander (1990) | 302 KB 16-bit MZ, Borland TC++ 1990 — `WC.EXE` is the authority; `../wc1-re` is a 1996 Win32 reconstruction used as graded supporting evidence |
-| `C:\Arbeit\F030ICR` (ICR) | IndyCar Racing v1.05 (1994) | three 1.44 MB DOS floppy images; executable/container shape TBD until the installer is extracted |
+| `C:\Arbeit\F030ICR` (ICR) | IndyCar Racing v1.05 (1994) | three 1.44 MB DOS floppy images → installed `INDYCAR.EXE` (742,377 B): Watcom C/C++32, DOS/4GW MZ stub + LE module (LE header at 0x27BDC, two objects) |
 | `C:\Arbeit\F030PanzerGeneral` (PG) | Panzer General (1994) | Watcom DOS/4GW MZ bootstrap + LE module; 0x344A4-byte trailing overlay outside the declared LE end, runtime classification TBD |
 
 WC1 is in this table because it is the family's worked example of a helpful but
@@ -26,6 +26,10 @@ non-authoritative reconstruction. Its 1996 Win32 source can accelerate reading
 the 1990 DOS build, but the DOS binary decides behaviour. METHOD.md §4.2
 requires the reconstruction's build and fidelity grade to be cited in the
 function record, and any difference to be resolved against DOS evidence.
+As of 2026-08-26 the `F030WC1` working copy in this workspace is a stub — no
+game media, no `../wc1-re`, no analysis tree, no git history — so its row
+records prior findings that cannot currently be re-verified here (see the WC1
+adopt list).
 
 The other twelve hit the same problems in different orders. This document collects the
 techniques that transfer, each attributed to where it was learned so the
@@ -698,6 +702,19 @@ load-bearing policies, so their names are known here:
   reconstruction invariant where available, but it does not by itself prove
   code classification or semantics; keep independent entry-point evidence,
   data guards, residue classes and runtime witnesses.
+- **Trace the milestone route before generating sources.** Before creating or
+  changing JavaScript or M68k source for a milestone, run the authoritative
+  DOS path under QEMU execution tracing — the `dos/trace/` TCG plugin, or
+  `-d exec,nochain` logging where the plugin is unavailable (that locates the
+  route; per-byte coverage still belongs to the plugin, §6) — with repeatable
+  inputs and state/memory snapshots. Record reached function entries, indirect
+  callbacks, resource reads/pointers, state transitions, and frame order in a
+  durable, committed route manifest. Generate only the JS/M68k contracts
+  represented by that route; unreached or unexplained code stays
+  `dormant`/`Unproven` and cannot support the milestone. Browser and target
+  experiments validate the route; they do not define it. *(CMN
+  `docs/RE-WORKFLOW.md` §Trace the milestone route before porting; upstreamed
+  2026-08-26 from an edit made in CMN's generated copy.)*
 - **Fidelity is an observable contract.** Preserve rules, ordering, arithmetic
   widths and results over the declared supported scope while adapting hardware
   mechanisms at explicit seams. A claim of 100 % fidelity is a conclusion from
@@ -743,8 +760,8 @@ load-bearing policies, so their names are known here:
 - **Link implementation source to the disassembled function.** Every
   JavaScript/browser and 68000/m68k function source that implements or exposes
   a recovered DOS function carries an adjacent comment or docstring linking to
-  the durable function record and naming the disassembled DOS function symbol
-  plus canonical range/entry. Use the same stable function ID in the record and
+  the durable function record and the milestone route manifest, and naming the
+  disassembled DOS function symbol plus canonical range/entry. Use the same stable function ID in the record and
   both implementation sources; a separate map or file-level comment is not
   enough. Code with no DOS counterpart says `N/A - platform replacement` or
   `Target artefact` at the definition.
@@ -835,10 +852,11 @@ load-bearing policies, so their names are known here:
 - **Rank the citation, because a citation is only as strong as the
   disassembly behind it.** An address in a region nobody proved was code is a
   guess wearing ground truth's clothes, and Ghidra returns a plausible
-  `FUN_xxx+0y` for any address you ask about. Four evidence ranks, named in the function record:
-  header: **executed** under telemetry (§6) is strongest, **covered by the
-  reassembly ratchet** (§4a) is strong, **reached only by a sweep's
-  inference** (§1) is weakest and says so, and a **recovered source tree** is a
+  `FUN_xxx+0y` for any address you ask about. Four evidence ranks, named in
+  the function-record header: **executed** under telemetry (§6) is strongest,
+  **covered by the reassembly ratchet** (§4a) is strong, **reached only by a
+  sweep's inference** (§1) is weakest and says so, and a **recovered source
+  tree** is a
   fourth kind of supporting evidence that has to declare *which build* it
   reconstructs and *what its fidelity grade is* before it can be cited at all.
   Porting from a weak rank is allowed; presenting it as a strong one is not.
@@ -872,18 +890,18 @@ F29 is the source of most of §1–§5 and needs the least methodologically. Wha
 it can take from the siblings is harnesses — and, now that its port is the
 family's furthest along, the phase-4 policies written down in METHOD.md §4.
 
-1. **Run the reassembly ratchet on `X.EXE`** (§4a; METHOD.md §2.4). nasm is
-   already installed and the 68 KB binary is the family's smallest target. The
-   ratchet is the *positive* invariant next to the data guard's negative one:
-   it mechanically locates every jump-into-mid-instruction site, turns the 132
-   unreached regions into an exact `db`-run inventory, and settles the two
-   `0xD2DA` slots left as "an off-by-one never resolved" (`RE-NOTES.md`) —
+1. **~~Run the reassembly ratchet on `X.EXE`~~ DONE (2026-08-24).**
+   `docs/REASSEMBLY.md`: the authoritative `X.EXE` rebuilds byte-for-byte
+   (matching SHA-256), `tools/re/reasm.py` inventories 141 exact unreached
+   runs plus 17 entries landing inside another decoded instruction, and the
+   two `0xD2DA` slots are reported as still unresolved rather than guessed —
    with the SMC sites as expected, labelled residue.
-2. **Hash a golden frame.** `grab-frame.sh` already dumps a raw RGB565 buffer
-   before converting it for eyes; a stored hash at a fixed VBL is the
-   regression that would have caught all three `MENU.md` register-clobber bugs
-   the moment they landed (METHOD.md §4.5). Cheaper than any of the three
-   debugging sessions it replaces.
+2. **Hash a golden frame — half done: automate the compare.** The hashes are
+   recorded (`docs/ENGINE.md` §Golden frame, 2026-08-24), but nothing runs
+   them: `grab-frame.sh` still only dumps and converts, so the stored value
+   is a hand-checked constant in prose, not the regression that would have
+   caught the three `MENU.md` register-clobber bugs the moment they landed
+   (METHOD.md §4.5). Wire the hash comparison into a make target.
 3. **State the fidelity line and the numeric convention before task 6.** The
    original is 8.8 fixed point, a 1024-entry sine table, 10-bit pre-doubled
    angles; `cpu3d.s` is Q1.23 with tenth-degree angles. METHOD.md §4.1
@@ -904,10 +922,14 @@ family's furthest along, the phase-4 policies written down in METHOD.md §4.
    found by grep. Import into a *separate* project and treat anything it
    reaches inside a known-data region as a Ghidra error, not a discovery.
 6. **Adopt explicit status markers** (§5) in the format documents — and
-   reconcile the four different coverage figures frozen in
-   `README.md`/`RE-WORKFLOW.md`/`DISPLAY-LIST.md`/`RE-NOTES.md` (44.6 / 45.7
-   / ~41 / 51.8 %): state the number once, next to the command that
-   reproduces it, and point the rest there.
+   reconcile the coverage figures, now scattered wider than when this item
+   was written: `README.md` 44.6 %, `RE-WORKFLOW.md` 45.7 % ("capped on
+   purpose"), `DISPLAY-LIST.md` "roughly 59 % … not reached" (i.e. ~41 %,
+   invisible to a grep for the number), `RE-NOTES.md` 51.8 %, plus
+   `REASSEMBLY.md` (51.8 % of the load module, 41.7 % mnemonic bytes of the
+   whole file) and two more stale 44.6 % citations in `GAME-LOOP.md`. State
+   the number once, next to the command that reproduces it, and point the
+   rest there.
 7. **The DOS oracle is the natural answer to the 132 unreached regions**:
    indirect targets that static seeding cannot justify can be observed being
    taken — an EIP histogram over the running original ranks which regions

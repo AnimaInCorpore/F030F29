@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 r"""Runtime probe for the project's DOS oracle image, over QMP/HMP.
 
-**Identical copy in F030Underworld / F030Underworld2 / TIE / F030F29** -- like
-`dosimg.py`, `run_qemu.py` and `mbr.asm`.  Nothing here is game-specific: the
-image, the game binary, the Ghidra address skew and the RAM signatures are all
-discovered from the project layout and the MZ header.  Keep the copies in sync.
+**Master copy in F030Method/dos/; synced verbatim into every family project
+that carries the harness** (`python dos/sync.py`) -- like `dosimg.py`,
+`run_qemu.py` and `mbr.asm`.  Nothing here is game-specific: the image, the
+game binary, the Ghidra address skew and the RAM signatures are all
+discovered from the project layout and the MZ header.  Fix bugs in the
+master, then `sync.py --push`.
 
 Boots the image in its current mode (for UW1: `uw`), waits for the game to
 reach a steady state, then reads off what the static disassembly cannot:
