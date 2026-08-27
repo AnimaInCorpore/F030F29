@@ -267,6 +267,16 @@ same audit caught a second instance in the same repo: `TIE.EXE`'s "8-entry
 pointer table @ 0x20" was its MZ relocation table, and its "e_lfanew 0x39EC"
 was relocation data — with `e_lfarlc = 0x20` the table starts *before* 0x3C.)*
 
+**For a Phar Lap tail, parse adjacent `P3` records and separate runtime blocks
+before disassembling.** Links 386's appended region is an exact two-record
+stream: the P3 headers and load offsets partition the file without a gap, while
+each record also has a distinct 0x80-byte `DX` runtime block. A packed record's
+declared initial EIP can be in the expanded memory image rather than the
+on-disk load bytes. Keep the P3 header, DX block, packed load image, expanded
+image and any descriptor/table payload as separate address spaces; use the
+record-end identity and an exact expansion-size check before naming code.
+*(L386 `analysis/executable.md`, measured 2026-08-26.)*
+
 ## 2. Idioms that derail a disassembler
 
 These are properties of *hand-written* real-mode code. Compiler output (UW1/UW2
@@ -543,6 +553,178 @@ Three techniques inside it generalise beyond DOS:
   this was believed). What works: files the guest writes, read back with mtools;
   QMP `screendump`; and `pmemsave 0xB8000` decoded as 80×25 text.
 
+**Check the CPU mode before believing a linear address.** `gdbstub_probe.py`
+was written against real-mode targets and computed every address as
+`(selector << 4) + (EIP & 0xFFFF)`. Against ICR — DOS/4GW, 32-bit flat, image
+above 1 MB — that turned an EIP of `0x001999D7` into `0180:99E0 = 0x0b1e0`,
+and the chase then *confirmed* it by finding those RAM bytes in the file: the
+address is inside DOS/4GW's real-mode stub, which is genuinely resident there,
+so a wrong address landed in real code and produced a plausible delta. The
+probe now reads `CR0.PE`, `EFLAGS.VM` and the CS `D` bit and reports
+`real` / `v86` / `pm16` / `pm32`, takes the linear address from the descriptor
+base in protected mode, and keeps paragraph arithmetic for real and **V86** —
+any DOS guest with EMM386 loaded has `CR0.PE=1` while its segments are still
+paragraphs, so V86 must not be treated as protected mode. *(Found on ICR,
+2026-08-26; fixed in the master.)*
+
+**A trace sample is worthless until you know which descriptor tables were
+live.** L386 read a QEMU sample as extender state and built a whole failure
+theory on it — `INT 28h` faulting through an all-zero `IDT[0x28]` at
+`0x14CB80`. The sample's `EFL` had bit 17 set: it was V86 mode at the
+`COMMAND.COM` prompt *after the game had already exited*, so `0x14CB80` was
+EMM386's IDT and `INT n` trapping to #GP is EMM386's design, not a fault.
+While the extender actually ran, the same trace reported `IDT=0x0000F59C`,
+`GDT=0x00C02000`, `LDT=0x00C12000`. Two cheap habits catch this: **split
+event counts around the failure point** — 21,545 of L386's 21,552 `INT 28h`
+records were after it, which alone falsifies the theory — and **read `GDT`,
+`LDT`, `IDT` and `CR3` out of every dump you quote**, because a changed
+descriptor base means you have changed universes, not just addresses.
+*(Found on L386, 2026-08-27; the V86 half is the same trap `gdbstub_probe.py`
+was hardened against on ICR the day before.)*
+
+**A resource-exhaustion message is usually a recursion report.** L386's DOS
+oracle died on `Phar Lap fatal err 10049: Ran out of stack buffers`, and two
+derived experiments enlarged the declared interrupt-stack pool (20x3 KB, then
+64x4 KB) with no effect — which reads as "the pool is not the problem" but
+was actually the diagnosis: the extender's ring-0 `INT 21h` handler loaded
+`ds` from a word holding an invalid selector, its own #GP entry repeated the
+identical load, and the recursion ate the pool 3 KB at a time until it was
+gone. Before sizing a pool, **count the nested faults and diff the consumption
+step against the declared unit** — 19 faults, `ESP` stepping by exactly
+`0xC00`, against a declared `NISTACK=20`/`ISTKSIZE=3` says "correctly sized
+and consumed by recursion", not "too small". Two bounds separate a transient
+bad value from a corrupted image, and both come free from an `-d exec` log:
+count executions of the instruction *after* the faulting one (363 successes
+before the failure), and check whether the terminal error path re-executes the
+same load without faulting (it did). *(L386 `analysis/executable.md`,
+2026-08-27.)*
+
+**Scan all of RAM, or say that you did not.** The same probe scanned
+`0x00000..0xA0000` and printed every miss as `NOT FOUND in RAM (overwritten at
+runtime?)` — an absence of evidence phrased as evidence of absence, for an
+image that was simply above the search range. A search bound belongs in the
+message that reports the miss.
+
+**One `pmemsave` beats seven signature windows.** Dumping all of guest RAM once
+and matching every 4 KB of the file against it on the host (`--dump-ram`) costs
+one command and turns calibration from a vote into a map. On ICR it showed
+what no vote could have: the first `0x25000` bytes of the LE image resident
+**twice** at two different deltas, a third block spanning the LE-page/appended
+boundary with no seam, and code and data displaced from each other by exactly
+`0x1000`. The old 7-window majority vote would have picked one delta and
+reported it as *the* mapping. Report each delta with the file range it covers,
+and report two resident copies as two copies — that is a fact about the guest,
+not an ambiguity to resolve.
+
+**A loader that applies fixups makes byte-window residency under-report.**
+Where LE/DPMI fixups (or real-mode relocations) rewrite operands, the RAM bytes
+differ from the file bytes and an exact window match fails on a page that is
+fully resident. On ICR only 13 of 102 LE windows matched exactly while 47 more
+matched within 8 of 64 bytes — the differences being the data base `0x1E0000`
+added to stored object-relative operands. Score near-matches before concluding
+a page is absent, and never read a static operand as an address without adding
+the base the loader adds. UW1 shows the real-mode form of the same thing: its
+mismatching windows are relocated segment words (`68 e1 55` → `68 77 5b`).
+
+**A random gate cannot be answered by a fixed key script — read the challenge
+out of the guest.** ICR's copy protection picks one of 169 manual lookups per
+run (`seed *= 0x19660D`, `mod 169`), so `run_qemu.py --key` cannot pass it and
+the screen text is the only thing a human sees. The game stores the chosen
+index in memory (`0x1EBDA8`); a driver that reads it over QMP, answers from the
+tables recovered from the executable, and then reads the game's *own* accept
+flag (`0x1EBD94`) passes the gate without patching the binary and without
+trusting a picture. Cross-check the recovered table against the text on screen
+before answering, and abort on disagreement — otherwise a drifted data delta
+silently answers a different challenge. *(ICR `work/drive_protection.py`,
+`analysis/copy-protection.md`, 2026-08-26.)*
+
+**When a check hashes the answer, you recover an accepted string, not the
+word.** ICR compares a 32-bit hash of the *first three characters* of the typed
+answer, lowercased, against a 169-entry table; there is no word list in the
+game at all, which is why searching for one found nothing. Every entry inverts
+within three characters — but with 1 to 61 preimages each, so a preimage is
+"something the check accepts", not the word printed in the manual. Record it
+that way; a recovered preimage written down as game data is invention.
+
+**Diff two RAM dumps of the *same* run to separate self-modification from
+load-time fixups.** A file-vs-RAM diff cannot tell them apart: both show bytes
+that differ from the executable. Dumping the same process twice in two states
+can. ICR's hot rendering loop differs from the file in 92 of 320 bytes, which
+proves nothing on its own — but 34 of those bytes *also* differ between a dump
+taken at the copy-protection screen and one taken in a practice session, with
+no reload in between. Those 34 are patched immediates: the file holds
+`00 00 ff ff` placeholders where the running code holds a stepping constant.
+Anything that recovers such a routine from the file alone recovers the
+placeholders. *(ICR `analysis/renderer.md`, 2026-08-26.)*
+
+**Sample the EIP in the state you care about, and bin the result — a top-N
+list is not a distribution.** Once a driver can reach a session, sampling there
+localises the hot code in one run; a histogram taken at a menu or a gate says
+only where the game waits. But read it with a bin summary, not by eye: ICR's
+top-N rows all sat in ~3.5 KB and were written up as "the hot region", while
+binning 200 samples by 4 KB showed the truth — 88% in a 12 KB window, 94% in
+16 KB, and a min..max span of 303 KB that is pure outlier range. Both the
+narrow read (from the top rows) and the wide read (from min..max) are wrong by
+more than an order of magnitude in opposite directions. Print cumulative
+percentages and neither mistake survives.
+
+**Find a game's framebuffer by correlating a screendump with a RAM dump, on
+pixel-equality structure.** Pair the two captures at the same instant, then
+look for a region of RAM whose adjacent-pixel equality pattern matches the
+picture's. A palette is a bijection, so `pixel[i] == pixel[j]` survives it even
+though the byte values do not — which means the search needs no knowledge of
+the palette, the pixel format or the pitch, and a few hundred bytes of pattern
+is already unique. Check the output resolution first: QEMU reported ICR's
+mode 13h as 640x400, and every 2x2 block was uniform, so the real frame is
+320x200 and the correlation must be done on the de-doubled image. ICR's frame came out at
+linear `0x23E130`, byte-identical to VGA memory at `0xA0000`, with 0
+mismatches in 63,999 comparisons across the whole frame; the address was the
+same in two runs and two game states. **What that proves is "this buffer is on
+screen", not "this is the back buffer"** — a first draft here said the latter,
+and the rasteriser then showed the draw target was a *second* buffer one frame
+further on (`[ptr] = base + 64000`). Correlation finds the displayed page;
+only the code that computes a destination address tells you which page is
+which. The palette then falls out for free — the frame gives index → RGB for every colour on screen, and
+searching for those triples as 6-bit DAC values locates the palette buffers.
+*(ICR `analysis/renderer.md`, 2026-08-26.)*
+
+**Recover a call chain from the stack, not from cross-references.** Sampling
+EIP says where the time goes; sampling *ESP* says who asked for it. Read a
+window at ESP each time, keep the dwords that land inside the loaded image, and
+keep only those preceded by a `call rel32` (check the byte at `v-5` against
+the RAM dump, then decode the target from `v-4`). What survives is the live
+frames. On ICR that put the return address `0x1D67DE` on the stack in 80 of 90
+samples and named its callee directly, which is the rasteriser above the hot
+span loops — a routine no static cross-reference scan had reached, because the
+inner loops are entered through indirect calls and a two-level jump table.
+Frames whose call target lies *outside* the region you care about are just as
+useful: they are the surrounding state machine. *(ICR `analysis/renderer.md`,
+2026-08-26.)*
+
+**A routine can run with zero references to it anywhere in memory.** ICR's
+span-build routine is entered by an address computed into a register: no
+`call rel32`, no `jmp`, and no stored dword pointing anywhere into it exists in
+a whole 16 MB dump — the single hit is the live return address on the stack.
+Yet EIP sampling proves it runs. Two consequences. A cross-reference search
+that comes back empty is evidence about the *mechanism*, not about the
+routine, and it should be written down that way rather than as "unreachable" or
+"dead". And the caller of such a routine can only be found dynamically.
+
+**Recognise a threaded-code interpreter before mapping its "callers".** ICR's
+display lists run on `lodsd; jmp dword [eax*4 + table]` — each handler fetches
+the next opcode and jumps, so the whole subsystem shares one stack frame. That
+made four addresses dominate the stack histogram and look like four separate
+subsystems calling in; they are returns inside one interpreter. Counting the
+handler table (19 entries here, followed by an unrelated identity byte table
+that a naive walk would swallow) is what turns it back into one component.
+
+**A code/data delta that differs by one page is self-consistent when wrong.**
+ICR's code is resident at `+0x13EEDC` and its data at `+0x13FEDC`. Reading a
+string with the code delta lands one page short and returns a *different but
+entirely plausible* string from the same table — `"Bad file create"` instead of
+`"Page %d, line %d, word 1?"`. Verify a string mapping by finding the string
+itself in the dump, not by trusting a delta measured on code.
+
 **DOSBox-X is the complementary oracle** (POR `analysis/dos-oracle.md`): its
 `[log]` section takes per-category switches — `int10`, `io`, `vga`, `int21`,
 `fileio` — and a dummy SDL video driver runs it headless, which is I/O tracing
@@ -647,6 +829,33 @@ what it claims to. *(F29 `RE-WORKFLOW.md` Traps.)*
 - **A tool that disagrees with the authoritative listing is wrong.** F29's
   `peek.py` has reported misaligned addresses more than once; the
   recursive-descent listing wins.
+- **x86 byte-width arithmetic does not survive being widened to 32 bits.**
+  `mov edx, 0x21 / sub dl, ah` is not `edx = 0x21 - ah`: the whole of `edx`
+  is loaded, the subtraction happens in the low byte alone, and the result is
+  an 8-bit difference zero-extended back — so it *wraps to 0xFF* where the
+  widened form goes negative. Porting the widened form and then adding a
+  `max(0, ...)` guard to keep it sane produces a plausible, wrong second
+  behaviour, and the guard hides that the original's clamp opens up rather
+  than closing. The same trap runs through `add al, dh` / `neg al` /
+  `shl al,1` chains and through 8-bit surface addressing, where the wrap *is*
+  the addressing mode. Reproduce the width, not the expression. *(CMN
+  `backdrop_build` at 00007D93, and `hud_refresh_clearance` at 00019370,
+  where a widened `2h+1` also grew a clamp at 255 the original lacks.)*
+- **A cited address that lands mid-instruction is a misread boundary, not a
+  rounding error.** Function records that name a range end inside a
+  multi-byte instruction are usually recording a split the original does not
+  have: CMN's attract tick was recorded as two routines divided at
+  00005A1B/00005A1C, both inside the six-byte instruction at 00005A1A, and
+  the half above it had been labelled with the *other* screen's animation
+  table. Validate every recorded address against the listing's instruction
+  starts; the ones that fail are where the reading went wrong. Data addresses
+  legitimately fail this check, so classify rather than silently accept.
+- **A tail `jmp` is a call the caller cannot see.** CMN's frame driver was
+  ported with the object draw pass moved out of the persistent surface,
+  because the update pass at 000234A4 ends in `jmp 0x24b17` and the driver's
+  call list appears to contain only the update. Resolve the last instruction
+  of every routine a ported caller invokes before deciding what that call
+  does.
 - **`mtype`/`mcat` on a missing file dump the raw image** and look like content.
   Always check the exit status. *(TIE.)*
 - **7-Zip reads FAT12 floppy images and LZH directly, but not ARC — and it does
