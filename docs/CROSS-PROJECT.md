@@ -813,6 +813,55 @@ rate divided by the wrong interval gives a plausible but meaningless number.
 Before changing code because a check came back wrong, confirm the check measures
 what it claims to. *(F29 `RE-WORKFLOW.md` Traps.)*
 
+### Capturing at an instruction, not an instant
+
+The probe above reads a *running* program. When what you need is one routine's
+inputs paired with its outputs, that is not enough, and the gap is subtle
+enough to burn a day.
+
+**Freezing the machine gets you atomicity, not phase.** QMP `stop` really does
+freeze it — every read after it belongs to the same instant. But a frame driver
+typically **latches state, renders, then integrates**, so an arbitrary instant
+lands somewhere in that cycle and pairs one frame's inputs with another frame's
+outputs. Nothing about the captured data looks wrong: the shapes are right, the
+sizes are right, and the only symptom is a model that is subtly wrong in its
+*numbers* — characteristically with the error growing along the computation,
+because a slightly-off starting condition diverges as the routine walks.
+
+Comanche's terrain marcher scored 4.8 %–16.1 % against captures like that, and
+the score moved with nothing but where the freeze landed. Eight structural
+hypotheses were raised and eliminated against those scores. **Not one of them
+was the fault.** Stopping at the routine's own `ret` took the same model,
+unchanged, to **100.0 %** — 17024/17024 columns over 152 rings.
+
+So: capture at an **instruction**. QEMU accepts `-gdb tcp:127.0.0.1:PORT`
+alongside `-qmp`, and the two coexist — break through the stub, read through
+QMP. A ~60-line RSP client is the whole cost (`Z0,addr,1` to insert, `c`, wait
+for a `T05` stop reply); see `F030Comanche/work/rsp.py`. Three things make it
+reliable:
+
+- **Connecting to the gdbstub pauses the VM by itself.** The breakpoint is
+  therefore armed against a stopped guest and cannot be missed in the window
+  between connecting and inserting it.
+- **The stub reports *that* it stopped, not *where*.** Read the PC back through
+  the other channel — QMP `info registers` — and check it against the request.
+  A wrong-address stop otherwise yields a capture that looks phase-coherent and
+  is not, which is the same failure you were trying to eliminate.
+- **The stub takes linear addresses.** With paging off under a DOS extender,
+  linear = physical = the address `xp`/`pmemsave` use, so the flat-base constant
+  you already calibrated applies unchanged. Do not reuse an EIP here: the exec
+  trace's `Trace 0: [cs_base/pc/...]` second field is **linear**, and reading it
+  as EIP is off by the base.
+
+Pick the address as the producer's **own exit** — after its last write to the
+shared buffer, before whatever runs next overwrites part of it. In Comanche
+that was `0000F317`, the marcher's `ret`: the side/rear view's marcher runs
+immediately after and overwrites 80 of the 192 columns in the same region.
+
+*(The QMP-not-gdbstub preference recorded above is a Windows-build caveat about
+dropped commands — on macOS and Linux the stub is dependable, and for
+breakpoints there is no QMP alternative to fall back on.)*
+
 ## 7. Traps that cost real time
 
 - **Reading rendered digits at thumbnail scale.** F29's debug font is 4×5
@@ -850,6 +899,98 @@ what it claims to. *(F29 `RE-WORKFLOW.md` Traps.)*
   table. Validate every recorded address against the listing's instruction
   starts; the ones that fail are where the reading went wrong. Data addresses
   legitimately fail this check, so classify rather than silently accept.
+- **Two struct fields standing for one original array.** When a port's field
+  map names one offset by field number ("field 8") and another by
+  displacement ("disp 0002107C"), check whether they are the same array read
+  through two different call sites. CMN's object struct carried a
+  previous-position triple *and* a "home position" triple that were both
+  00021 07C/1284/1AA7; the factory wrote one, the state latch wrote the other,
+  and the terrain probe read the one nobody was updating. Build the field map
+  from the array base addresses and their stride, not from what each call site
+  looks like it is doing.
+- **`cmp [mem], reg` and `cmp.b <ea>,Dn` have opposite operand order.** x86
+  compares memory minus register; 68k compares the *register* minus the
+  effective address. Transcribing the operands left to right inverts carry and
+  sign for every caller that looks past `beq`, and the equality-only callers
+  hide it until one of them starts branching on magnitude.
+- **A dormant helper is still invention.** "No caller yet" does not make a
+  second mechanic harmless - CMN carried an uncalled generic damage sweep that
+  retired objects and decremented a mission counter, next to the recovered
+  per-object state that actually does the retiring. Whoever wires it up later
+  inherits two lifetimes and no way to tell which was recovered. Delete it and
+  record what the original does instead.
+- **A cited range is a claim about what the bytes are, and it can be checked.**
+  CMN's menu record cited "shipped menu defaults" at a range whose first
+  twelve bytes turned out to be the analogue joystick calibration block - the
+  same three min/centre/max pairs a replay-loader routine 0x50000 bytes away
+  reads by absolute address. Grep the cited addresses for *every* reader
+  before trusting a data label; a range with two unrelated consumers is
+  usually two ranges.
+- **Two errors that cancel are still two errors, and the third caller finds
+  them.** CMN's object mover added a term the original subtracts and read its
+  heading through the port's inverted player convention; the two cancelled, so
+  objects moved along exactly the right path and the bug was invisible. What
+  it left behind was a stored heading byte that was not the original's - and a
+  second consumer, the model's aspect index, added that byte straight in and
+  faced every object the wrong way. When a value is stored in a struct rather
+  than consumed on the spot, check every reader before concluding a
+  compensating pair is harmless; put the correction where the original puts
+  it, not where it happens to cancel.
+- **One port routine standing in for several originals loses whatever they
+  disagreed about.** CMN has three sprite blitters that take the same 8-byte
+  record and differ in source layout, transparency and *placement*: two snap
+  the left edge to a four-pixel VGA byte boundary, the third takes the plane
+  from the low two bits of X and places to the pixel. The port folded them
+  into one writer with the quantisation always on, so every HUD element was
+  snapped to a grid the original places exactly - including a velocity sight
+  whose only job is to be where the vector points. When several DOS entries
+  collapse to one port routine, enumerate what each one does differently
+  before merging, and keep the differing behaviour as a parameter with each
+  original's address on it.
+- **Check WHICH asset the original loaded before tuning anything that reads
+  it.** CMN's terrain package was generated from `HIGH.DTL` for months and
+  measured 21-23 rows off, surviving eight parameter fits. The shipped
+  install runs *medium* detail: a one-byte setting picks between three files
+  with 250, 180 and 100 entries, and a memory dump of the running original
+  read the count as 180. Every fit had been fitting scalars to the wrong
+  file's data. Before adjusting arithmetic to close a gap, capture which
+  resource the original actually has open.
+- **Hardcoded absolute offsets into a variable-length file are a real
+  behaviour, and porting the file format instead of the program's arithmetic
+  gets them wrong.** CMN loads the chosen `.DTL` to a fixed address and then
+  reads its five tables at `+4`, `+1004`, `+2004`, `+3004`, `+4004` - the
+  boundaries of a 250-entry file, whatever file is actually loaded. With the
+  180-entry file those land partway into neighbouring tables and the original
+  reads them anyway. A generator that parses the format "correctly" produces
+  a table the original never had. Reproduce the addressing, not the schema.
+- **A table past the image's content end is BSS - build the memory reader
+  instead of reading harder.** CMN spent eight parameter fits on a terrain
+  silhouette gap before anyone checked where the tables lived: every one the
+  surface transfer reads starts at or after `0x32B20`, and the flat content
+  region ends at exactly `0x32B20`. Nothing in the file could have answered
+  it. A ~150-line QMP reader over the QEMU DOS harness dumps them from the
+  running original, and its first use verified a routine 192/192 at three
+  cameras *and* corrected the recorded shape of the tables themselves - what
+  had been described as four per-column tables is one run list. Compare the
+  address of any table you are guessing at against the image's content end
+  before deciding whether disassembly can settle it.
+- **Asset layout is testable evidence, not an assumption to carry.** Which of
+  those blitters owns which bank was settled by measuring the gaps between
+  consecutive frame data offsets across all 21 installed banks: every payload
+  is exactly `width * height`, and the plane-chunked blitter reads
+  `4 * (width >> 2)` per row, so it can only serve banks whose widths are all
+  multiples of four - which is exactly the three it is called with. A
+  five-line script over the shipped data decided a question that reading the
+  disassembly had left ambiguous.
+- **A per-frame buffer that gets copied out is an interface, not a scratch.**
+  CMN's voxel marcher keeps its per-column horizon on the stack and, at the
+  end of every depth ring, `rep movsd`s the finished 192 bytes into a
+  ring-indexed table. Reading the marcher alone, that copy looks like
+  bookkeeping; the consumer is 900 instructions away in the sprite blitter,
+  which reads the row for the object's own ring and uses it to clip the model
+  against the terrain in front of it. The port had every part of the marcher
+  right and no occlusion of objects at all. Chase the destination of every
+  block copy a routine makes before deciding the routine is complete.
 - **A tail `jmp` is a call the caller cannot see.** CMN's frame driver was
   ported with the object draw pass moved out of the persistent surface,
   because the update pass at 000234A4 ends in `jmp 0x24b17` and the driver's
