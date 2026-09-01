@@ -853,6 +853,20 @@ reliable:
   trace's `Trace 0: [cs_base/pc/...]` second field is **linear**, and reading it
   as EIP is off by the base.
 
+**A repeated breakpoint needs a step, or the guest never moves.** Everything
+above concerns *one* stop. The moment you want a trace — the same address, over
+and over, one row per hit — QEMU re-tests the breakpoint at the start of the
+block it is about to execute, so a plain `c` from a PC that still carries one
+stops again immediately without running a single instruction. The stub reports
+a stop, the reads succeed, and every row is byte-identical, because nothing
+happened. That reads as a frozen game or a dead replay, not as a tool fault:
+Comanche's replay trace returned 800 "ticks" at the same record in under a
+second, with real, correct-looking state in every one of them. Real GDB avoids
+this by lifting the breakpoint, single-stepping, re-arming and only then
+continuing — `z0` / `s` / `Z0` / `c`. Do the same
+(`F030Comanche/work/rsp.py`'s `cont_from_break`). A harness proven on a single
+capture will fail the first time it is asked for a sequence.
+
 Pick the address as the producer's **own exit** — after its last write to the
 shared buffer, before whatever runs next overwrites part of it. In Comanche
 that was `0000F317`, the marcher's `ret`: the side/rear view's marcher runs
@@ -997,6 +1011,41 @@ breakpoints there is no QMP alternative to fall back on.)*
   call list appears to contain only the update. Resolve the last instruction
   of every routine a ported caller invokes before deciding what that call
   does.
+- **A wrong pointer whose *low* half is plausible is a neighbour overwrite,
+  not a wrong value.** CMN spent several sessions comparing a corrupt
+  `object_draw_model_bank` against every value it could have been assigned
+  from, and it matched none of them, because it had never been assigned: the
+  variable declared immediately before it in BSS was a `ds.w 1` written by a
+  `move.l`, which put the stored register's low word over the *high* word of
+  the pointer. The readings looked like small code addresses that crept with
+  each relink; they were the surviving bottom half of a correct address with
+  its top zeroed. Two signatures identify this immediately - the damaged
+  field's neighbour is intact (the damage is one field wide, in one
+  direction), and the bad value tracks the *layout* rather than any data. A
+  watchpoint settles it in one run where sampling cannot: Hatari's
+  `b ($addr).l < $textbase && ($addr).l ! ($addr).l :once :file hit.ini`
+  breaks on the instruction after the write, and reports the writer's PC. The
+  assembler cannot warn about this - `move.l d1,label` is legal against a
+  two-byte reservation - so check it mechanically instead;
+  `CMN work/check_store_widths.py` parses the tree's `ds.b`/`ds.w`/`ds.l`
+  reservations and flags any absolute store wider than the slot it names.
+- **Compare two machines at the same LOGICAL step, never at the same time.**
+  When a port and the original both consume a recorded input stream, the
+  stream's own cursor is a shared clock and wall-clock time is not: CMN's
+  attract replay advances one 8-byte record per rendered frame in both, so
+  `[0x19ECC]` and the port's `demo_cursor` step 8 from the same initial 13 and
+  name the same replay position - even though the QEMU guest runs it at 162
+  records/second and the 68030 port at 1.8. Breaking both at the same cursor
+  value made the flight integration checkable and it came out bit-exact (raw
+  X, raw Y, angle, altitude, at two independent records); comparing "a frame
+  about that far in" could never have. Expect an off-by-one and pin it down
+  rather than tuning it out - the port integrates inside its tick and then
+  renders, the original latches its camera first and integrates after, so the
+  same state is observed one record apart. Corollary: **do not ask an
+  instruction-accurate-but-not-timing-accurate emulator how long anything
+  took.** QEMU's TCG has no 486 timing model; it answers what the program
+  computes, never its wall clock. *(CMN `work/dump_marcher_tables.py
+  --want-cursor`, `work/replay_rate.py`.)*
 - **`mtype`/`mcat` on a missing file dump the raw image** and look like content.
   Always check the exit status. *(TIE.)*
 - **7-Zip reads FAT12 floppy images and LZH directly, but not ARC — and it does
@@ -1004,6 +1053,107 @@ breakpoints there is no QMP alternative to fall back on.)*
   script that ignores exit codes silently produces an empty tree. Use
   `unar`/`lsar` and verify against the archive's stored CRCs. *(POR
   `analysis/tools.md`.)*
+
+### Translating an expression into the port's own units
+
+Two faults in one 30-instruction routine (CMN `00024DA4-00024DFC`, closed
+2026-08-31), neither of them in a test, both in a line that turns an
+original's number into the port's. They cost a whole on-screen panel and read
+as "the port rejects where the original accepts" for weeks.
+
+- **Take each operand's scale from its own storage, not from the shift
+  standing next to it.** The routine loads a depth, shifts it left three to
+  make a table search key, and later divides an unrelated lateral by a table
+  entry. The port applied the search key's three shifts to the lateral as
+  well, on top of the four that convert the original's 12.20 to its own
+  16.16. The result was well-formed and eight times too large, which narrowed
+  an accepted band of 240 values to about 30 - so a few objects near the
+  centre still worked and nothing looked broken. Re-read which register the
+  dividend actually comes from: here it is reloaded from memory *after* the
+  shift, so the shift is not part of it.
+- **An array reached through a based pointer: find the producer's write
+  offset before translating the index.** The same routine indexes a per-ring
+  archive by a value that is also a surface column, and the archive's 192
+  entries begin `0x20` into each 256-byte record because the marcher writes
+  them there. A port that stores only the 192 must index by `index - 0x20`.
+  Nothing about the read site says so - the bias lives in the *writer*, six
+  thousand instructions away. A neighbouring read in the same routine had the
+  bias applied and this one did not, which is the signature to look for.
+
+  Settle it with a memory dump rather than an argument: dumping the archive
+  and counting non-zero bytes per record showed exactly 192, at offsets
+  32..223, and nothing outside them.
+
+A third, found in the same routine by reading the *consumer* rather than the
+producer: **before writing a formula, check whether the original already
+computes that value and hands it on.** The projection's intermediate `v` is
+also stored to a global that the shared blit tail adds to the sprite's
+destination column, so `v` *is* where the object is drawn. The port had an
+independently reasoned pinhole there instead ("the fan spans lateral/depth in
+-1..+1"), which is a different fan - the original's per-ring lateral step
+makes its half-fan a fifth wider - so every object was pulled toward the
+centre and off the terrain feature it stands on. Two projections that must
+agree is a testable property, and it can be tested inside the port with no
+oracle at all: the column the formula names and the column the terrain
+marcher steps to that lateral offset must be the same, and they were out by
+up to fifty.
+
+A fourth, and it is the one that hid the other three the longest: **a cull the
+original does not have is as much a difference as a missing one, and a bound
+reasoned from geometry is not the bound.** The port had added two culls to a
+draw walk that has exactly two tests of its own, at limits derived from "how
+far the renderer reaches" rather than read off the routine. The original's
+range cull sits elsewhere and is 512 units where the port used 992 - and 512
+is not a taste in draw distance, it is where the ring-search key `depth << 3`
+passes 2^32 and wraps. Drawing further than the original was drawing garbage:
+an object past the bound resolved to a near ring and a wrong size. Read the
+bound; if it looks arbitrary, look for the overflow it is protecting.
+
+**A gate added to suppress a symptom will suppress the fix as well.** The same
+port drew a HUD element from the wrong bank, got a large sprite across every
+frame, and was given a phase test to stop it - a test the original does not
+have. That test then also suppressed the target designator, which shares the
+routine, so a whole visible feature was missing for a reason recorded nowhere.
+The bank was decidable by reading one instruction: the blitter's first
+instruction names the pointer it reads, two such pointers existed, and the one
+it uses had an element count in its own header that names the file. When a
+symptom is suppressed rather than explained, write down which instruction the
+gate corresponds to - and if the answer is "none", it is a bug being hidden.
+
+**Do not port what the capture cannot check.** The same sitting decoded a
+per-column shear the port's sprite blitter is missing. It was left as a
+recorded decode, not a change, because the original's own horizon array reads
+zero across every column in the available capture - roll and pitch are both
+zero on that route - so a before/after could not distinguish the fix from its
+absence. A change that cannot be verified is a change that will be believed
+without evidence.
+
+**Certify the corrected model against the original's own frozen frame, not
+against the picture.** One phase-coherent capture (§Capturing at an
+instruction) that freezes the inputs *and* the bytes the routine wrote lets
+the model be run over the original's own numbers and compared to the
+original's own answers - here it reproduced the accept/reject on every live
+slot and the stored byte exactly. That also discriminates the two faults from
+each other: on the captured object the mis-indexed array read alone flipped
+the decision, independently of the scale error. A screenshot could not have
+separated them, because both produce the same blank panel.
+
+### Tables that are code in the file and data at run time
+
+A read that indexes an address below the image's content boundary is not
+therefore reading the image. CMN's sprite scale ramp is indexed at flat
+`0x1D7EC` with a pool at `0x1DBEC`, and both addresses hold **code** in the
+shipped file - an unrolled `rep stosd` screen clear - which the program
+overwrites with generated tables at startup. Dumping the file at those
+addresses returns plausible-looking dwords that decode as nothing, and the
+disassembler happily shows instructions there. One `pmemsave` out of the
+running game returned a monotonic 128-entry offset table and a pool whose
+every ramp sums to 64, which settled the encoding in a single read.
+
+The signature to watch for: an indexed read whose base address is never
+written anywhere in the listing, over bytes the recursive walk also claims as
+code. Either the walk is wrong or the table is generated - and a memory dump
+distinguishes them immediately, where more static reading cannot.
 
 ### Flags and offsets that silently change the answer
 
@@ -1023,6 +1173,18 @@ into a doc and believed. Several of these were live at once in UW1:
   0xFE00). The obvious formula is wrong by the header size and names every
   address with a real function that is simply the wrong one. Derive the skew
   from the header and check it against a known string before trusting a name.
+- **Skipping a field block is not the same as reading it.** When a text-format
+  parser reaches values a port does not consume, the tempting shortcut is to
+  cross them with N line-skips instead of N number-reads. That works only while
+  your idea of the file's line layout is right, and it fails silently: the
+  parse continues, the records that follow are well-formed, and there is simply
+  one fewer of them. Comanche crossed nine numbers with three line-skips and
+  the third ate the first placement record - a record whose type byte was the
+  only thing that installed the player's own object, so an entire camera in
+  the attract aimed at an object that did not exist, with no error anywhere.
+  Read the fields the original reads, in the order it reads them, even when you
+  throw the values away; and check the record COUNT against the original's own
+  (`[0x19D64]` here) rather than against the records looking sensible.
 - **A name that resolves is not evidence.** Densely tiled function tables (an
   overlay pool, an auto-analysed blob) return a plausible `FUN_xxx+0y` for any
   address you hand them, including addresses that are not in that region at all.

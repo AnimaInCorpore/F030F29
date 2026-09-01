@@ -52,6 +52,13 @@ import dosimg
 
 QEMU = dosimg.host_tool('qemu-system-i386')
 
+# Guest RAM, in MB.  Named because the signature search has to know it: a
+# real-mode image lives below the 640 KB line, a DPMI-extended one does not,
+# and scanning only the first 0xA0000 for the latter reports every signature
+# as "NOT FOUND in RAM (overwritten at runtime?)" -- absence of evidence
+# printed as evidence of absence.
+MEM_MB = 16
+
 
 def free_port():
     """Ask the OS for an unused QMP port instead of hardcoding one.
@@ -297,7 +304,11 @@ class Qmp:
 # of this script) therefore silently lost every segment register and reported
 # CS=DS=ES=SS=0000 -- which makes every linear address wrong.  Match with a
 # regex that tolerates the space instead.
-REG_RE = re.compile(r'\b([A-Z]{2,6})\s*=\s*([0-9a-fA-F]{4,8})\b')
+# The name class must admit digits: `CR0`, `CR4` and `DR7` are registers too,
+# and `[A-Z]{2,6}` silently skipped every one of them -- which is how CR0.PE,
+# the one bit that says whether the guest is in protected mode at all, went
+# missing and a DOS/4GW guest was reported as `mode=real`.
+REG_RE = re.compile(r'\b([A-Z][A-Z0-9]{1,5})\s*=\s*([0-9a-fA-F]{4,8})\b')
 
 
 def parse_regs(text):
@@ -305,6 +316,117 @@ def parse_regs(text):
     for name, val in REG_RE.findall(text):
         d.setdefault(name, int(val, 16))         # first occurrence wins
     return d
+
+
+# A protected-mode guest's segment registers are selectors, not paragraphs:
+# `(sel << 4) + off` is then a number with no meaning, and EIP is 32 bits wide
+# so masking it to 16 loses the address entirely.  QEMU prints the descriptor
+# the selector resolves to right next to it -- take the base from there:
+#
+#   CS =0180 00000000 ffffffff 00cf9b00 DPL=0 CS32 [-RA]
+#         ^selector ^base    ^limit   ^attr        ^ 32-bit code
+#
+# DOS/4GW and Phar Lap targets run flat (base 0, 4 GB limit) with the image
+# loaded above 1 MB, which is why the real-mode assumptions below had to be
+# made explicit rather than left implicit.
+SEG_RE = re.compile(r'\b(ES|CS|SS|DS|FS|GS)\s*=\s*([0-9a-fA-F]{4})\s+'
+                    r'([0-9a-fA-F]{8})\s+([0-9a-fA-F]{8})\s+'
+                    r'([0-9a-fA-F]{8})')
+
+
+def parse_segs(text):
+    """{'CS': (selector, base, limit, attr), ...} -- empty in real mode."""
+    return {n: (int(sel, 16), int(base, 16), int(lim, 16), int(attr, 16))
+            for n, sel, base, lim, attr in SEG_RE.findall(text)}
+
+
+def cpu_mode(text, regs):
+    """'real', 'v86', 'pm16' or 'pm32', from CR0.PE, EFLAGS.VM and the CS D bit.
+
+    QEMU prints the descriptor type mnemonic (`CS32`/`CS16`) for a protected
+    mode guest; fall back to attr bit 22 (D/B) when the mnemonic is absent.
+
+    **V86 is not protected mode for addressing purposes.**  Any DOS guest with
+    EMM386 loaded runs with CR0.PE=1 while its segment registers stay
+    paragraphs, so calling that `pm16` and reaching for a descriptor base
+    would be a wrong label on a right answer -- QEMU reports base = sel<<4
+    there, so both routes agree, and the label is what a reader would
+    otherwise carry into the next project.
+    """
+    if not regs.get('CR0', 0) & 1:
+        return 'real'
+    if regs.get('EFL', 0) & (1 << 17):            # EFLAGS.VM
+        return 'v86'
+    if 'CS32' in text:
+        return 'pm32'
+    if 'CS16' in text:
+        return 'pm16'
+    segs = parse_segs(text)
+    return 'pm32' if segs.get('CS', (0, 0, 0, 0))[3] & (1 << 22) else 'pm16'
+
+
+def linear(mode, regs, segs, seg, off):
+    """Linear address of `seg:off` under the guest's *current* mode.
+
+    Real mode keeps the paragraph arithmetic and the 16-bit offset.  In
+    protected mode the descriptor base is the only correct answer, and the
+    offset must not be truncated.
+    """
+    if mode in ('real', 'v86'):
+        return ((regs.get(seg, 0) & 0xFFFF) << 4) + (off & 0xFFFF)
+    if seg in segs:
+        return (segs[seg][1] + off) & 0xFFFFFFFF
+    return off & 0xFFFFFFFF
+
+
+def mapping_report(exe, ram, step=0x1000, win=16):
+    """Every `step` bytes of the file, hunted for in a whole-RAM dump.
+
+    The signature vote reads 7 windows over QMP and asks which single delta
+    most of them agree on.  That is enough for a real-mode image loaded in one
+    piece, and actively misleading for anything else: an extender image, a
+    self-loaded overlay and a second copy of the same bytes all produce
+    windows that vote against each other, and the loser is printed as
+    'NOT FOUND ... (overwritten at runtime?)' -- absence of evidence again.
+
+    With the whole of RAM on the host, every window can be checked against
+    every address for free.  Returns a list of (delta, first_file_off,
+    last_file_off, count) runs, so a caller can see *which file range* each
+    delta covers rather than one number for the file as a whole.
+
+    A window that occurs at several deltas is reported at each of them: two
+    resident copies of one image is a fact about the guest, not an ambiguity
+    to be resolved by picking one.
+    """
+    by_delta = collections.defaultdict(list)
+    unmatched = 0
+    for off in range(0, len(exe) - win, step):
+        w = exe[off:off + win]
+        if len(set(w)) < 4:            # 00-fill and pad runs match everywhere
+            continue
+        hits, at = [], ram.find(w)
+        while at >= 0 and len(hits) < 8:
+            hits.append(at - off)
+            at = ram.find(w, at + 1)
+        if not hits:
+            unmatched += 1
+        for d in hits:
+            by_delta[d].append(off)
+    runs = []
+    for d, offs in by_delta.items():
+        offs.sort()
+        start = prev = offs[0]
+        n = 1
+        for o in offs[1:]:
+            if o - prev <= step * 4:            # tolerate fixed-up gaps
+                prev, n = o, n + 1
+                continue
+            runs.append((d, start, prev, n))
+            start = prev = o
+            n = 1
+        runs.append((d, start, prev, n))
+    runs.sort(key=lambda r: (-r[3], r[1]))
+    return runs, unmatched
 
 
 def load_functions(skew):
@@ -378,6 +500,10 @@ def main():
                     help='HMP sendkey after round 1, then sample again')
     ap.add_argument('--chase', type=int, default=0, metavar='N',
                     help='N samples hunting for code outside the loaded image')
+    ap.add_argument('--dump-ram', action='store_true',
+                    help='pmemsave all of guest RAM once, then match every '
+                         '4 KB file window against it on the host. Exhaustive '
+                         'where the 7-signature vote is a sample.')
     ap.add_argument('--kill-strays', action='store_true',
                     help='kill every qemu-system-i386 on the host first. '
                          'Off by default: it also kills sibling projects\' '
@@ -395,7 +521,7 @@ def main():
         kill_strays()
     qmp_port = free_port()
     cyls, heads, secs, _part_off = geometry(args.hdd)
-    cmd = [QEMU, '-M', 'pc', '-cpu', '486', '-m', '16',
+    cmd = [QEMU, '-M', 'pc', '-cpu', '486', '-m', str(MEM_MB),
            '-drive', f'file={args.hdd.replace(chr(92), "/")},format=raw,'
                      f'if=none,id=hd0,cache=writeback',
            '-device', f'ide-hd,drive=hd0,bus=ide.0,unit=0,'
@@ -414,7 +540,13 @@ def main():
     atexit.register(lambda: proc.kill() if proc.poll() is None else None)
 
     def qemu_out():
-        log_fh.flush()
+        # Called once more after the teardown closes log_fh, so a closed
+        # handle is normal here -- it used to end the run in a traceback
+        # *after* all the evidence had been gathered and printed.
+        try:
+            log_fh.flush()
+        except ValueError:
+            pass
         try:
             return open(qemu_log, encoding='utf-8', errors='replace').read()
         except OSError:
@@ -492,20 +624,63 @@ def main():
     print('--- raw `info registers` ---')
     print(raw.strip())
     r = parse_regs(raw)
+    segs = parse_segs(raw)
+    mode = cpu_mode(raw, r)
     print('--- parsed ---')
     print('  ' + '  '.join(f'{k}={r[k]:04X}' for k in
                            ('CS', 'DS', 'ES', 'SS') if k in r))
     if 'CS' not in r:
         print('  !! CS still unparsed -- fix REG_RE before trusting anything')
+    print(f'  mode={mode}' + (
+        '  (real-mode paragraph arithmetic)' if mode == 'real' else
+        '  (V86: CR0.PE is set, but segments are still paragraphs)'
+        if mode == 'v86' else
+        '  ' + '  '.join(f'{k} base={segs[k][1]:#010x}'
+                         for k in ('CS', 'DS', 'SS') if k in segs)))
+    if mode not in ('real', 'v86'):
+        print('  protected mode: selectors are not paragraphs -- linear '
+              'addresses below come from the descriptor base, and EIP is '
+              'used at full width')
+
+    # A DPMI/extender guest sampled at one moment may be inside a real-mode
+    # stub the next; the scan has to cover wherever the image can be.
+    scan_end = 0xA0000 if mode in ('real', 'v86') else MEM_MB << 20
+
+    # ---- exhaustive mapping, when asked for -------------------------------
+    ram_runs = None
+    if args.dump_ram:
+        ram_path = os.path.join(OUTDIR, 'ram.bin')
+        stale(ram_path)
+        nbytes = MEM_MB << 20
+        qmp.hmp(f'pmemsave 0 {nbytes} "{ram_path}"')
+        for _ in range(60):
+            if os.path.exists(ram_path) and os.path.getsize(ram_path) >= nbytes:
+                break
+            time.sleep(0.5)
+        if not os.path.exists(ram_path) or os.path.getsize(ram_path) < nbytes:
+            print(f'!! pmemsave produced {os.path.getsize(ram_path) if os.path.exists(ram_path) else 0}'
+                  f' of {nbytes} B -- skipping the mapping report')
+        else:
+            ram = open(ram_path, 'rb').read()
+            ram_runs, unmatched = mapping_report(exe, ram)
+            total = len(exe) // 0x1000
+            print(f'--- mapping report: every 4 KB of the file vs all '
+                  f'{nbytes >> 20} MB of RAM ({ram_path}) ---')
+            print(f'  {unmatched} of ~{total} windows found nowhere in RAM '
+                  f'(not loaded, or rewritten by load-time fixups)')
+            for d, lo, hi, n in ram_runs[:16]:
+                print(f'  delta {d:#010x}  file {lo:#08x}..{hi:#08x}  '
+                      f'{n} window{"s" if n > 1 else ""}  '
+                      f'-> linear {lo + d:#010x}..{hi + d:#010x}')
 
     # ---- calibrate the file->linear delta ---------------------------------
     print(f'--- signature search: {len(sigs)} candidates, one pass over '
-          f'0x00000..0xA0000 in 16 KB chunks (15 B overlap) ---')
+          f'0x00000..{scan_end:#x} in 16 KB chunks (15 B overlap) ---')
     found = {}
     carry = b''
     unread = 0
     nchunks = 0
-    for base in range(0x00000, 0xA0000, 0x4000):
+    for base in range(0x00000, scan_end, 0x4000):
         nchunks += 1
         d = xp(base, 0x4000)
         if len(d) != 0x4000:
@@ -528,10 +703,14 @@ def main():
         print(f'  !! {unread} of {nchunks} 16 KB chunks unreadable over QMP -- '
               f'treat NOT FOUND below as inconclusive, not as overwritten')
     for label, off in sigs:
+        # An exact window match is the only positive here, so every negative
+        # has to carry its own caveats: the search bound, and the fact that a
+        # loader applying fixups rewrites bytes on pages that ARE resident.
         state = (f'delta {found[label]:#07x}' if label in found
                  else ('NOT FOUND in readable RAM (unreadable chunks above?)'
                        if unread else
-                       'NOT FOUND in RAM (overwritten at runtime?)'))
+                       f'NOT FOUND below {scan_end:#x} (not loaded, '
+                       f'overwritten, or rewritten by load-time fixups)'))
         print(f'  {label:24s} file {off:#07x}  {exe[off:off + 8].hex(" ")}…  '
               f'{state}')
 
@@ -557,8 +736,14 @@ def main():
         print(f'\n*** file -> linear delta = {delta:#07x} '
               f'({agree} of {len(image_found)} located image signatures agree'
               f'{pool_note})')
-        print(f'*** load module base   = {delta + hdr:#07x} '
-              f'(segment {load_seg:#06x}, PSP {load_seg - 0x10:#06x})')
+        if mode in ('real', 'v86'):
+            # V86 included: a DOS program under EMM386 still has a PSP and
+            # still loads on a paragraph boundary.
+            print(f'*** load module base   = {delta + hdr:#07x} '
+                  f'(segment {load_seg:#06x}, PSP {load_seg - 0x10:#06x})')
+        else:
+            print(f'*** load module base   = {delta + hdr:#07x} '
+                  f'(no PSP/segment reading: the guest is in {mode})')
         if tail_start:
             print(f'*** pool first bytes   = {tail_start + delta:#07x} '
                   f'(overlay buffer base -- NOT proof the pool is resident; '
@@ -570,6 +755,24 @@ def main():
         print(f'\n!! no strict majority among located image signatures '
               f'(a tie or too few hits): {found} -- '
               f'cannot calibrate; EIP samples stay unsymbolicated')
+    if len(votes) > 1:
+        # Several deltas, each backed by a located window, is the signature of
+        # a multi-object load (LE/P3 objects, or an image plus a separately
+        # placed overlay).  One of them is not "the" delta: print the file
+        # ranges each one covers and let the project's executable.md model the
+        # objects.  Collapsing this to a majority is how a wrong flat mapping
+        # gets written down as measured.
+        print(f'--- {len(votes)} distinct deltas among located windows: the '
+              f'image is NOT one flat span ---')
+        by_delta = {}
+        for label, off in sigs:
+            if label in found:
+                by_delta.setdefault(found[label], []).append((off, label))
+        for d in sorted(by_delta):
+            offs = sorted(by_delta[d])
+            span = f'{offs[0][0]:#07x}..{offs[-1][0]:#07x}'
+            print(f'  delta {d:#09x}  file {span}  '
+                  f'({len(offs)} window{"s" if len(offs) > 1 else ""})')
 
     # ---- is the whole file really resident at `delta`? --------------------
     # The two signature hits only prove 32 bytes.  A single sampled SS:SP
@@ -609,11 +812,15 @@ def main():
                 print(f'      ram  {got.hex(" ")}')
 
         # What does the current stack actually look like, and where is it?
-        rr = parse_regs(qmp.hmp('info registers'))
+        raw_s = qmp.hmp('info registers')
+        rr = parse_regs(raw_s)
+        ssegs = parse_segs(raw_s)
+        smode = cpu_mode(raw_s, rr)
         if 'SS' in rr:
-            sp = rr.get('ESP', 0) & 0xFFFF
-            slin = (rr['SS'] << 4) + sp
-            print(f'--- stack: SS:SP = {rr["SS"]:04X}:{sp:04X} = {slin:#07x} '
+            sp = (rr.get('ESP', 0) if smode not in ('real', 'v86')
+                  else rr.get('ESP', 0) & 0xFFFF)
+            slin = linear(smode, rr, ssegs, 'SS', rr.get('ESP', 0))
+            print(f'--- stack: SS:SP = {rr["SS"]:04X}:{sp:08X} = {slin:#09x} '
                   f'(file {slin - delta:#07x} if inside the image) ---')
             print(f'  at SP:      {xp(slin, 32).hex(" ")}')
             print(f'  file there: {exe[slin - delta:slin - delta + 32].hex(" ") if 0 <= slin - delta < len(exe) else "(outside)"}')
@@ -628,26 +835,41 @@ def main():
         print('--- chase: bytes at CS:IP for code outside the DOS-loaded image ---')
         seen = set()
         for _ in range(rounds):
-            rr = parse_regs(qmp.hmp('info registers'))
+            raw_r = qmp.hmp('info registers')
+            rr = parse_regs(raw_r)
+            rsegs = parse_segs(raw_r)
+            rmode = cpu_mode(raw_r, rr)
             cs = rr.get('CS')
             if cs is None:
                 break
-            ip = rr.get('EIP', 0) & 0xFFFF
-            lin = (cs << 4) + ip
+            ip = (rr.get('EIP', 0) if rmode not in ('real', 'v86')
+                  else rr.get('EIP', 0) & 0xFFFF)
+            lin = linear(rmode, rr, rsegs, 'CS', rr.get('EIP', 0))
             f_off = lin - (delta or 0)
-            if not (tail_start and tail_start <= f_off < len(exe)) or cs in seen:
+            # Without a delta there is no "inside the image" to be outside of,
+            # so chase every distinct sampled address instead: the byte match
+            # below is what proves a mapping, and it needs no delta to run.
+            key = cs if delta is not None else lin
+            in_scope = (tail_start and tail_start <= f_off < len(exe)) \
+                if delta is not None else True
+            if not in_scope or key in seen:
                 time.sleep(0.15)
                 continue
-            seen.add(cs)
+            seen.add(key)
             blob = xp(lin, 32)
-            print(f'  CS:IP {cs:04X}:{ip:04X} = {lin:#07x}  '
-                  f'("file {f_off:#07x}" under the +{delta:#x} model)')
+            model = (f'("file {f_off:#07x}" under the +{delta:#x} model)'
+                     if delta is not None else '(no calibrated delta)')
+            print(f'  CS:EIP {cs:04X}:{ip:08X} = {lin:#09x}  {model}')
             print(f'    ram : {blob.hex(" ")}')
-            print(f'    file: {exe[f_off:f_off + 32].hex(" ")}')
+            if delta is not None:
+                print(f'    file: {exe[f_off:f_off + 32].hex(" ")}')
             hit = exe.find(blob[:10]) if len(blob) >= 10 else -1
             if hit >= 0:
+                dup = exe.find(blob[:10], hit + 1)
                 print(f'    -> those bytes DO occur in UW.EXE at file {hit:#07x}'
-                      f'  => delta {lin - hit:#07x}')
+                      f'  => delta {lin - hit:#09x}'
+                      + ('  (NOT unique -- also at '
+                         f'{dup:#07x}; delta unproven)' if dup >= 0 else ''))
             else:
                 print('    -> not found in UW.EXE (relocated, generated, '
                       'or decompressed at runtime)')
@@ -657,32 +879,38 @@ def main():
 
     if args.chase:
         if delta is None:
-            print('--- chase skipped: calibration failed, there is no '
-                  'file->linear delta to test candidate bytes against ---')
-        else:
-            chase(args.chase)
+            print('--- chase: uncalibrated, so every distinct sampled address '
+                  'is matched back into the file by bytes ---')
+        chase(args.chase)
 
     # ---- EIP histogram ----------------------------------------------------
     def round_of_samples(tag):
         print(f'--- EIP samples ({tag}, n={args.samples}) ---')
         hist = collections.Counter()
-        segs = collections.Counter()
+        seg_hist = collections.Counter()
+        modes = collections.Counter()
         for i in range(args.samples):
-            rr = parse_regs(qmp.hmp('info registers'))
-            cs, ip = rr.get('CS'), rr.get('EIP', 0) & 0xFFFF
+            raw_i = qmp.hmp('info registers')
+            rr = parse_regs(raw_i)
+            isegs = parse_segs(raw_i)
+            imode = cpu_mode(raw_i, rr)
+            cs = rr.get('CS')
+            ip = (rr.get('EIP', 0) if imode not in ('real', 'v86')
+                  else rr.get('EIP', 0) & 0xFFFF)
             if cs is None:
                 continue
-            lin = (cs << 4) + ip
+            lin = linear(imode, rr, isegs, 'CS', rr.get('EIP', 0))
+            modes[imode] += 1
             hist[lin] += 1
-            segs[(cs, rr.get('DS'), rr.get('ES'), rr.get('SS'))] += 1
+            seg_hist[(cs, rr.get('DS'), rr.get('ES'), rr.get('SS'))] += 1
             if i < 4:
                 where = ''
                 if delta is not None and 0 <= lin - delta < len(exe):
                     nm = name_for(funcs, lin - delta, tail_start)
                     where = f'  file {lin - delta:#07x}' + (f'  {nm}' if nm else '')
-                print(f'  {i}: {cs:04X}:{ip:04X} = {lin:#07x}{where}   '
+                print(f'  {i}: {cs:04X}:{ip:08X} = {lin:#09x}{where}   '
                       f'DS={rr.get("DS", 0):04X} ES={rr.get("ES", 0):04X} '
-                      f'SS={rr.get("SS", 0):04X} SP={rr.get("ESP", 0) & 0xFFFF:04X}')
+                      f'SS={rr.get("SS", 0):04X} SP={rr.get("ESP", 0):08X}')
             time.sleep(0.2)
         print(f'  top addresses ({len(hist)} distinct):')
         for lin, n in hist.most_common(12):
@@ -691,9 +919,14 @@ def main():
                 f_off = lin - delta
                 nm = name_for(funcs, f_off, tail_start)
                 where = f'file {f_off:#07x}' + (f'  {nm}' if nm else '  (no fn)')
-            print(f'    {n:3d}x  {lin:#07x}  {where}')
+            print(f'    {n:3d}x  {lin:#09x}  {where}')
+        if len(modes) > 1:
+            # A DPMI guest drops back into the stub for I/O; a histogram that
+            # mixes modes has mixed address spaces in it.
+            print('  CPU mode per sample: ' + ', '.join(
+                f'{m}x{n}' for m, n in modes.most_common()))
         print('  segment registers seen (CS, DS, ES, SS):')
-        for (cs, ds, es, ss), n in segs.most_common(6):
+        for (cs, ds, es, ss), n in seg_hist.most_common(6):
             def fmt(v):
                 return f'{v:04X}' if v is not None else '????'
             print(f'    {n:3d}x  CS={fmt(cs)} DS={fmt(ds)} ES={fmt(es)} '
