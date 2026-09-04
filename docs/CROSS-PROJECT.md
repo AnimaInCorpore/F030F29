@@ -813,6 +813,142 @@ rate divided by the wrong interval gives a plausible but meaningless number.
 Before changing code because a check came back wrong, confirm the check measures
 what it claims to. *(F29 `RE-WORKFLOW.md` Traps.)*
 
+### Reading a named variable whose segment you do not know yet
+
+A disassembly names a variable by its segment-relative offset — `[0x587C]` —
+and a RAM dump is indexed by linear address. Bridging the two by assuming a
+data segment is how a right answer gets read out of the wrong place. Two rules
+make the bridge a measurement:
+
+- **Anchor on the constants the program writes around it.** An init block that
+  loads a table of literals — L386's extender selector table writes twelve
+  known words into `[0x5878..0x588F]` — is a signature that appears in RAM only
+  after that block runs, and its position minus the table offset *is* the data
+  segment. Check first that the pattern does not occur in the file on disk: if
+  it does, a hit may be the image, not the running state. L386's does not, so
+  a hit is a runtime fact.
+- **Wildcard the word under test.** Match the eleven constants around
+  `[0x587C]` and leave two bytes as a hole. Anchoring on the full table would
+  have found the variable only when it already held the expected value, and
+  reported "not resident" when it did not — a search that assumes the answer it
+  is asked to measure, failing in the direction that looks like absence of
+  evidence.
+
+The result also cross-checks itself: an independent signature vote of the load
+module against the same dump gives the load segment, and the difference between
+the two is a constant of the executable, not of the run. L386 measured load
+segment `0x059D` and data segment `0x0D8B` — `0x7EE` paragraphs apart, and the
+same base QEMU prints for the extender's ring-0 `DS` — from one capture, with
+no number carried in from an earlier log. *(L386 `executable.md`,
+`work/read_mz_selector_table.py`.)*
+
+**A settled variable does not disprove a transient corruption.** L386's whole
+question was why one word held `0xFF50` at a fault when it should hold `0x0010`
+— and timed captures at the gate and after the fatal return both read `0x0010`,
+because the wrong value occupies the slot for the span of one ring-0 entry.
+That is a real result: it clears the source and moves the search below the
+publish sites. It is not a refutation, and reporting it as "the value is fine"
+would have retired a live bug. When the suspect value lives in a window, only a
+watchpoint or a breakpoint can be in the window with it.
+
+### The oracle can be the bug
+
+Every technique above treats the DOS oracle as the authority. It is, until a
+measurement says otherwise — and it is worth knowing what that looks like,
+because the failure mode is a stable, reproducible, entirely convincing wrong
+answer.
+
+L386's game died at startup with `Phar Lap fatal err 10049: Ran out of stack
+buffers`, reproducibly, at the same point in every run, under EMM386 and
+without it, at 16 MB and 32 MB, with the extender's declared interrupt-stack
+pool enlarged twice. A trace pinned it to one instruction — `mov ds,
+cs:[0x3F8]` — raising `#GP` nineteen times until the interrupt-stack pool
+emptied. The `#GP` error code was `0xFF50`, and since a bad segment load
+reports the selector, the word at `CS:0x3F8` was recorded as reading `0xFF50`
+where it should hold `0x0010`, and the search became "what writes the wrong
+selector". That search had a clean chain of evidence behind it and was aimed at
+a value no instruction ever wrote.
+
+Three measurements took it apart, in the order they are worth doing:
+
+- **A write watchpoint on the slot.** Four writes in a whole run, all in
+  startup, the last being the extender's own relocation copy; the slot then
+  holds `0x0010` for the rest of the run, the failure included. *No writer
+  exists* is a result, not a dead end — it says the premise is wrong.
+- **A read of the operand at the faulting instruction, with the CPU stopped on
+  it.** `0x0010`, with a hand-walked page table confirming the mapping that
+  reaches it. The instruction faults on a correct operand, which is not
+  something a program can do.
+- **A read watchpoint on the address the error code implied.** It fired in
+  lockstep with the fault: the instruction was dereferencing `disp32` with a
+  *zero* base instead of `CS.base + disp32`. The word there was `0xFF53` — IVT
+  vector `0xFE` — and `0xFF53` with the RPL bits masked into the IDT/EXT
+  fields is `0xFF50`, the error code, exactly. The emulator was dropping the
+  explicit `CS` override on a data reference, and (measured over the samples
+  taken) only when `DS`/`ES`/`SS` bases were all zero — the condition a
+  translator uses to decide a guest is "flat" and skip base arithmetic.
+
+A 512-byte boot sector then settled it away from the game entirely — no DOS,
+no extender, no paging, its own GDT, one instruction, the answer reported
+through `isa-debug-exit`. Each candidate address was given a *valid* selector
+so the test reported an address instead of faulting:
+
+| instruction | segment state | effective address |
+|---|---|---|
+| `mov ds, cs:[0x3F8]` | DS/ES/SS base 0 | `0x3F8` — **base dropped** |
+| `mov ds, cs:[0x3F8]` | DS/ES/SS base `0x2000` | `CS.base + 0x3F8` — correct |
+| `mov ebx, cs:[0x3F8]` | DS/ES/SS base 0 | `0x3F8` — **base dropped** |
+| `mov ebx, fs:[0x3F8]` | FS base `0x1000`, DS/ES/SS base 0 | `FS.base + 0x3F8` — correct |
+
+The last two are a controlled pair: same displacement, same base *value*, same
+instruction shape, same flat state, differing only in the override register.
+QEMU 11.1.1 (TCG) drops the base for `CS` and not for `FS`. A 386 applies the
+override unconditionally in every row. `-cpu 486` and `-cpu pentium` agree, so
+it was never CPU-model selection. *(L386 `work/segtest/`.)*
+
+**This is a live hazard for the flat-model members of the family.** Any
+DOS/4G, DOS/4GW, `LE` or Phar Lap `P3` target spends its life with
+`DS`/`ES`/`SS` bases at zero, which is exactly the state that triggers it, and
+extender and runtime code reaches `CS`-relative data through precisely this
+instruction form. TIE, Comanche, Magic Carpet, ICR and Panzer General all run
+in that model. A crash, a hang or a "the game just exits here" boundary in any
+of them is now a thing to test against a known-good emulator before it is
+recorded as a fact about the game.
+
+The transferable rules:
+
+- **Never derive a memory value from a fault's error code.** The error code
+  identifies a *selector*, not the address it came from. Read the address.
+  L386 spent a whole line of investigation on a value that was never in the
+  slot, and every step of it was internally consistent.
+- **A read watchpoint identifies the effective address an instruction
+  dereferences.** No register dump shows it, and a disassembly shows what the
+  instruction *means*, not what the machine did. `Z3` on the suspected address
+  is a direct yes/no.
+- **When a program faults on state you have measured to be correct, suspect
+  the emulator.** The tell is a contradiction that no program can produce: a
+  correct operand, a present mapping, and a fault. Do not resolve it by
+  re-reading the program.
+- **A reproducible failure is not a faithful one.** Reproducing identically
+  across memory sizes, memory managers, CPU models and configuration changes
+  argues the cause is *below* all of them — which includes the emulator, not
+  only the game.
+- **Confirm an emulator divergence with a minimal test case before building on
+  it**, and until it is confirmed, treat everything past the divergence as
+  unmeasured rather than as a property of the game. A boot sector is enough:
+  own GDT, one instruction, `isa-debug-exit` for the verdict, and arrange the
+  wrong answers to be *legal* so the test reports an address instead of
+  faulting. It costs an hour and it converts "the emulator is probably lying"
+  into a reproducer that can be sent upstream.
+- **Build the controlled pair, not just the reproducer.** The first L386 test
+  proved a base was dropped and would have supported "overrides are dropped in
+  flat mode", which is false and would have mis-scoped every follow-up. Varying
+  one thing — the override register, with the base value held identical —
+  narrowed it to `CS` alone. The cheap extra variant is what makes the finding
+  safe to act on.
+
+*(L386 `executable.md`, `work/watch_mirror.py`, `work/rsp.py`.)*
+
 ### Capturing at an instruction, not an instant
 
 The probe above reads a *running* program. When what you need is one routine's
@@ -837,8 +973,13 @@ unchanged, to **100.0 %** — 17024/17024 columns over 152 rings.
 So: capture at an **instruction**. QEMU accepts `-gdb tcp:127.0.0.1:PORT`
 alongside `-qmp`, and the two coexist — break through the stub, read through
 QMP. A ~60-line RSP client is the whole cost (`Z0,addr,1` to insert, `c`, wait
-for a `T05` stop reply); see `F030Comanche/work/rsp.py`. Three things make it
-reliable:
+for a `T05` stop reply); see `F030Comanche/work/rsp.py`, and
+`F030Links386/work/rsp.py` for the same client extended with `Z2` write and
+`Z3` read watchpoints. `Z2`/`Z3` take the address the x86 TLB sees — the
+linear address, segment base folded in, paging not yet applied — so they catch
+an access through *any* selector that lands on the slot, but not one through a
+different linear address that paging maps onto the same physical page. Three
+things make it reliable:
 
 - **Connecting to the gdbstub pauses the VM by itself.** The breakpoint is
   therefore armed against a stopped guest and cannot be missed in the window
@@ -849,7 +990,12 @@ reliable:
   is not, which is the same failure you were trying to eliminate.
 - **The stub takes linear addresses.** With paging off under a DOS extender,
   linear = physical = the address `xp`/`pmemsave` use, so the flat-base constant
-  you already calibrated applies unchanged. Do not reuse an EIP here: the exec
+  you already calibrated applies unchanged. Read `CR0` before relying on that:
+  a guest with EMM386 or a VCPI extender runs with `CR0.PG` set — L386's DOS
+  6.22 image reports `CR0=80000011` with a live `CR3` — and there linear equals
+  physical only across the identity-mapped low megabyte, so an extender address
+  above it must be translated through the guest's own page tables rather than
+  handed to `pmemsave`. Do not reuse an EIP here: the exec
   trace's `Trace 0: [cs_base/pc/...]` second field is **linear**, and reading it
   as EIP is off by the base.
 
