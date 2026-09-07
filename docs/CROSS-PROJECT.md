@@ -1024,6 +1024,29 @@ breakpoints there is no QMP alternative to fall back on.)*
 
 ## 7. Traps that cost real time
 
+- **Byte order belongs to a declared representation boundary.** DOS x86
+  fields are little-endian; MC68030 and MC68060 native state is big-endian.
+  Decode numeric fields with their widths and signedness, then calculate with
+  their native values. Do not reverse byte streams, text or palettes, double-swap
+  generated target tables, or compare raw DOS/68k state dumps as if their bytes
+  were canonical. CMN's DEMO reader decodes LE32 headers and LE16 axes, while
+  its mission XOR key preserves the original byte sequence. METHOD.md §4.4
+  defines the boundary and mixed-record validation rule.
+- **CPU selection does not prove native instruction support.** vasm accepts
+  32×32→64 multiplies under `-m68060`, but the MC68060 raises an
+  unimplemented-instruction exception; software must supply the operation.
+  Check the vendor manual and emitted instructions, then execute boundary
+  fixtures on the declared CPU. CMN keeps the native 68030 multiply and uses
+  exact partial products on 68060, preserving all 64 bits. Architecture may
+  change the arithmetic mechanism, not DOS widths, wrap or rounding boundaries;
+  RGB565 presentation conversion remains a separate graphics exception.
+  See METHOD.md §4.1–4.1a and CMN `analysis/functions/cpu-compatibility.md`.
+- **A condition-code consumer must follow the intended producer.** CMN's
+  opening-screen countdown branched after the keyboard test, so zero keys
+  expired every screen in one tick. DOS `LOOP` consumes the saved counter,
+  independently of those flags. Reload/test the counter at the branch and
+  verify exact transition ticks, not merely that the demo eventually starts.
+  Evidence: CMN `analysis/functions/falcon-attract.md`, countdown correction.
 - **Reading rendered digits at thumbnail scale.** F29's debug font is 4×5
   pixels; screenshots produced real misreadings — "913" for "013", "12352" for
   "12952" — that looked exactly like plausible bugs. Crop and upscale before
@@ -1360,6 +1383,36 @@ load-bearing policies, so their names are known here:
   reconstruction invariant where available, but it does not by itself prove
   code classification or semantics; keep independent entry-point evidence,
   data guards, residue classes and runtime witnesses.
+- **Plan the transitive dependencies of one connected route** (METHOD.md
+  §0.1–§0.2). Start at boot or the last verified checkpoint and name the next
+  player-visible result and integration symbol. Include state producers,
+  resources, indirect dispatch, callbacks/interrupts, input/timing and the
+  build/capture tools, not just direct callees. Link each required edge to its
+  provider, contract, evidence, readiness and next check. A captured-state
+  fixture cannot replace an unported producer in supported flow; a single
+  trace does not exclude unobserved reachable paths. Resolve oracle trust and
+  route gates first, then the smallest missing contract, implementation/parity
+  and measured performance. Use `../F030Method/templates/port-slice.md` in the
+  existing local plan; keep function evidence grades separate from dependency
+  readiness. This is the planning procedure for the existing fidelity gates,
+  not a claim that any game's dependencies are already closed.
+- **Shared dependencies have owners and acceptance checks.**
+  `../F030Method/DEPENDENCIES.md` records the workflow: retain provider
+  revisions/hashes, local patches, tool/emulator configurations and artifact
+  lineage; revalidate affected consumers when those inputs change. Fix shared
+  masters after reviewing drift, then propagate and run consumer checks. A
+  passing ledger/harness drift check proves copy equality, not available media,
+  a booting oracle or port readiness. Reuse sibling capabilities only after
+  checking the consuming build's own contracts; keep per-game policies and
+  addresses local.
+- **Budget the minimum target early; optimize after parity** (METHOD.md
+  §4.6a). Record peak simultaneously live memory, stack/scratch and any DSP
+  storage/transfer requirements along with simulation and presentation timing.
+  Label estimates and isolated probes; measure the correct connected route on
+  the declared minimum target before claiming headroom. Include packing,
+  transfers, waits and composition when judging an offload. A budget failure
+  calls for a measured mechanism change or an explicit support limitation,
+  never altered game ticks or semantic shortcuts.
 - **Trace the milestone route before generating sources.** Before creating or
   changing JavaScript or M68k source for a milestone, run the authoritative
   DOS path under QEMU execution tracing — the `dos/trace/` TCG plugin, or
@@ -1423,6 +1476,24 @@ load-bearing policies, so their names are known here:
   both implementation sources; a separate map or file-level comment is not
   enough. Code with no DOS counterpart says `N/A - platform replacement` or
   `Target artefact` at the definition.
+- **JavaScript is the executable semantic reference in the middle.** Follow
+  DOS execution → recovered contracts → DOS-validated JavaScript → native
+  m68k implementing the same contracts (METHOD.md §4.3a). Both implementations
+  link directly to the same DOS record. No target game function becomes
+  supported before its JavaScript counterpart passes the DOS fixtures and the
+  native target passes those same contracts. This is not a required C compiler
+  pipeline, mechanical JavaScript translation or a JavaScript runtime on the
+  Falcon. Preserve DOS numeric/byte-order semantics explicitly; native mechanisms
+  and documented hardware adapters may differ. DOS settles every disagreement.
+- **The ground-truth DOS function name is the shared function ID.** Use that
+  exact canonical name across the inventory, record, JavaScript/m68k source
+  annotations, route manifests and fixtures. Target names and friendly titles
+  are aliases. For stripped binaries, keep the established disassembly name
+  tied to the hashed build and verified entry/range; do not claim it is the
+  original source name. Target helpers retain their parent DOS ID and mapped
+  range; merged implementations list each DOS ID without merging the records.
+  Target-only adapters are explicitly N/A, never assigned a fabricated DOS ID.
+  Missing or ambiguous identity stays Unproven. See METHOD.md §4.2.
 - **A deterministic, playable browser/JavaScript game runtime is mandatory.**
   Start it with the first ported function and land its fixtures before or with
   every supported Falcon slice. The browser page itself is the game/reference
