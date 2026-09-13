@@ -13,7 +13,7 @@ tree is supporting evidence, never a replacement for the DOS oracle:
 | `C:\Arbeit\F030TieFighter` (TIE) | TIE Fighter CD (1995) | MZ stub + standard Watcom `LE` (DOS/4G), 1 MB 32-bit flat image |
 | `C:\Arbeit\F030F29` (F29) | F29 Retaliator (1990) | 68 KB hand-written 16-bit real mode |
 | `C:\Arbeit\F030Comanche` (CMN) | Comanche: Maximum Overkill (1992) | LZEXE-packed 16-bit MZ (60 KB → 378 KB unpacked): 16-bit bootstrap + 203 KB 32-bit flat program |
-| `C:\Arbeit\F030Falcon3` (F3) | Falcon 3.0 (1995) | 16-bit MZ, 118 KB load module + 1.24 MB RTLink v1 overlay tail (directory decoded, loader read contract traced in the oracle) |
+| `C:\Arbeit\F030Falcon3` (F3) | Falcon 3.0 (1995) | 16-bit MZ, 118 KB load module + 1.24 MB RTLink v1 overlay tail (directory, loader, thunk dispatch and eviction traced in the oracle) |
 | `C:\Arbeit\F030Links386` (L386) | Links 386 CD (1995) | 16-bit MZ loader, 0x2C524-byte image + 0x5D747-byte tail resolved as two Phar Lap 386 `P3`/EXP records (the embedded `DOS/4G` text is not the container signature) |
 | `C:\Arbeit\F030LOL` (LOL) | Lands of Lore: The Throne of Chaos (1994) | 16-bit MZ, Borland runtime/overlay manager; CD `LANDS.EXE` has 0x2800 + 0x21300 + 0x33985 (tail resolved: Borland TDS v3.16 debug data, not an overlay pool); installed `MAIN.EXE` has an `FBOV` tail (80 of 295 segments overlaid) |
 | `C:\Arbeit\F030MagicCarpet` (MC) | Magic Carpet (1994/1995) | Watcom DOS/4G MZ stub + LE protected-mode image; `CARPET.EXE` has a 0x60-byte stub header, 0x2932-byte MZ load module and 0xABF6F-byte appended region containing the LE payload |
@@ -1031,6 +1031,18 @@ Pick the address as the producer's **own exit** — after its last write to the
 shared buffer, before whatever runs next overwrites part of it. In Comanche
 that was `0000F317`, the marcher's `ret`: the side/rear view's marcher runs
 immediately after and overwrites 80 of the 192 columns in the same region.
+
+**Break on a manager's decisions, not its call path, when a timed route drives
+the run.** Each stop pauses the guest while wall-clock keystrokes keep firing,
+so breakpoints on a hot path (every overlay thunk, every `INT 21h`) push the
+route away from the one you meant to trace. F3's RTLink dispatcher runs on
+every overlay call; its probe instead broke only on the branch taken when a
+load is actually needed (`1AA3:0275`) and at each eviction (`02A2`), reading
+the overlay return stack from there. That was 115 stops over the whole War
+Room → cockpit route, the load order matched an independent read trace
+exactly, and the breakpoints, armed under `-S` before DOS had loaded the
+program, produced no stray hits from boot. *(F3 `work/rtlink_dispatch_trace.py`,
+2026-09-13.)*
 
 *(The QMP-not-gdbstub preference recorded above is a Windows-build caveat about
 dropped commands — on macOS and Linux the stub is dependable, and for
