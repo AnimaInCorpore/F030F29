@@ -390,6 +390,20 @@ separate 769-byte palette tail.
 the archives — an order of magnitude, enough to settle whether a file contains
 code at all.
 
+**Audio variants and framing precede polyphony claims.** F3's `MUSIC/` has
+150 SMF-header resources across six suffixes, with different arrangements;
+the extension alone does not prove which a DOS device route selects. Its
+`Y.MID` has no notes: 286 F0/F7 SysEx packets form 83 complete, checksum-valid
+Roland writes, including user timbre and patch memory. A reader exposing one
+`sysex` object per packet must not turn continuations into newly framed
+messages. Preserve raw framing, recover device selection and initialization,
+and record strict-reader rejections instead of silently repairing source
+files. Key-down counts and note starts per short window are static workload
+indicators, not sounding partial counts or achieved Falcon playback capacity;
+pedals, releases, percussion, bank state and driver scheduling remain separate
+contracts. See `F030Falcon3/analysis/music.md` (2026-09-13, static resource and
+checksum evidence; DOS selection and playback remain unverified).
+
 ## 4a. Byte-exact reassembly as a harness
 
 UW1 rebuilds all 561,744 bytes of `UW.EXE` from generated NASM source to the same
@@ -1174,6 +1188,17 @@ breakpoints there is no QMP alternative to fall back on.)*
   against the terrain in front of it. The port had every part of the marcher
   right and no occlusion of objects at all. Chase the destination of every
   block copy a routine makes before deciding the routine is complete.
+- **A second view needs the whole consumer contract, not just its terrain.**
+  CMN's target handler calls the same object pass again after substituting a
+  locked target's camera. Its direct RGB565 Falcon crop therefore has to
+  preserve the main frame's target-selection state, install the secondary
+  camera only for that pass, and carry the target marcher's per-ring
+  silhouette archive into the sprite clip. Calling the marcher alone produced
+  convincing terrain and a missing model; using the cockpit horizon for every
+  target depth produced a clipped sliver. When DOS re-enters a shared draw pass
+  under temporary globals, trace both the caller's state boundary and every
+  archived buffer the pass's consumers read. *(CMN `00007860`, `0001B26C`,
+  `00024B17`, closed 2026-09-08.)*
 - **A tail `jmp` is a call the caller cannot see.** CMN's frame driver was
   ported with the object draw pass moved out of the persistent surface,
   because the update pass at 000234A4 ends in `jmp 0x24b17` and the driver's
@@ -1224,6 +1249,20 @@ breakpoints there is no QMP alternative to fall back on.)*
   `analysis/tools.md`.)*
 
 ### Translating an expression into the port's own units
+
+**Keep an accumulator and its increments in one evidenced representation.**
+CMN's browser terrain marcher added raw DOS 10.22 DTL products to a 16.16
+camera and sampled the result as 16.16, producing tall terrain streaks. Its
+traversal test repeated the same mixed-scale start and passed. The correction
+retains raw camera registers and every accumulated product through the DOS
+top-ten-bit map lookup; shifting individual increments would lose carries.
+Test the sample address independently at cell/wrap boundaries, then feed the
+production routine captured original inputs and compare original outputs.
+Preserve operation order too: subtracting a signed high product is not adding
+the high product of a negated operand, because rounding and signed-minimum
+overflow differ. *(CMN `analysis/functions/browser-attract.md`, terrain
+coordinate correction, 2026-09-08; listing `0000D974-0000DA07`. Scope: terrain
+arithmetic and captured horizons, not full-frame certification.)*
 
 Two faults in one 30-instruction routine (CMN `00024DA4-00024DFC`, closed
 2026-08-31), neither of them in a test, both in a line that turns an
@@ -1560,6 +1599,37 @@ load-bearing policies, so their names are known here:
   and target boundaries, outside the semantic function path. A boundary guard
   required to prevent a host crash is a documented target artefact, never
   invented DOS error handling.
+- **An interrupt-driven effect needs an independent clock and every visible
+  consumer.** CMN's 2026-09-07 review found that the DOS shake PRNG/countdown
+  ran from a PIT ISR, while the native port advanced it per rendered frame
+  and the JavaScript reference omitted it. Forty controlled input/output
+  captures at the actual ISR's verified entry/exit established the arithmetic;
+  both native CPUs and JavaScript then consumed those same fixtures. A
+  rational host-clock adapter avoids cumulative rate rounding but must record
+  its quantization and initial-phase uncertainty separately. Replacing VGA
+  register writes does not permit omitting their visible effects: a cropped
+  framebuffer cannot supply pixels exposed by panning the full source page.
+  Recover page margins/scanout before supporting that presentation; keep the
+  unresolved boundary stopped, with diagnostics outside semantic routines.
+  Evidence and bounded status: CMN
+  `analysis/functions/browser-attract.md#shake-timer` and
+  `work/capture_shake_contract.py` / `tools/check-shake-contract.py`.
+- **A target continuity adapter must stay separate from parity evidence.** CMN's
+  browser attract now consumes the recovered shake phase, pixel-pan multiplier
+  and CRTC offset table on its 320x240 crop so the authored replay can continue
+  into later cockpit and mission passes. The newly exposed VGA page margin is
+  cleared at the target crop edge; complete DOS/Falcon displayed-window parity
+  remains stopped and explicitly Unproven. This is valid only as a declared
+  platform presentation seam, never as a second game behavior or a silent
+  replacement for missing source pixels. *(CMN
+  `analysis/functions/browser-attract.md#shake-timer`, 2026-09-08.)*
+- **A connected cockpit display needs an interior-pixel witness.** A visible
+  bezel proves composition only; each recovered DOS display handler, camera or
+  marcher must be composed into its own interior and checked there in the live
+  attract flow. If a browser continuity surface fills an otherwise empty panel
+  before replay state or a target span exists, record it as a platform seam and
+  keep it separate from DOS frame-parity evidence. *(CMN
+  `analysis/functions/browser-attract.md#mfd-map`, 2026-09-08.)*
 - **Browser file access goes through a virtual DOS filesystem.** The semantic
   core uses deterministic named-byte-file `open`/`read`/`seek`/`tell`/`close`
   semantics. IndexedDB may persist imported binaries, caches and saves;
