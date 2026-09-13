@@ -13,7 +13,7 @@ tree is supporting evidence, never a replacement for the DOS oracle:
 | `C:\Arbeit\F030TieFighter` (TIE) | TIE Fighter CD (1995) | MZ stub + standard Watcom `LE` (DOS/4G), 1 MB 32-bit flat image |
 | `C:\Arbeit\F030F29` (F29) | F29 Retaliator (1990) | 68 KB hand-written 16-bit real mode |
 | `C:\Arbeit\F030Comanche` (CMN) | Comanche: Maximum Overkill (1992) | LZEXE-packed 16-bit MZ (60 KB → 378 KB unpacked): 16-bit bootstrap + 203 KB 32-bit flat program |
-| `C:\Arbeit\F030Falcon3` (F3) | Falcon 3.0 (1995) | 16-bit MZ, 118 KB load module + 1.24 MB RTLink v1 overlay tail (directory decoded, runtime mapping sampled from the oracle) |
+| `C:\Arbeit\F030Falcon3` (F3) | Falcon 3.0 (1995) | 16-bit MZ, 118 KB load module + 1.24 MB RTLink v1 overlay tail (directory decoded, loader read contract traced in the oracle) |
 | `C:\Arbeit\F030Links386` (L386) | Links 386 CD (1995) | 16-bit MZ loader, 0x2C524-byte image + 0x5D747-byte tail resolved as two Phar Lap 386 `P3`/EXP records (the embedded `DOS/4G` text is not the container signature) |
 | `C:\Arbeit\F030LOL` (LOL) | Lands of Lore: The Throne of Chaos (1994) | 16-bit MZ, Borland runtime/overlay manager; CD `LANDS.EXE` has 0x2800 + 0x21300 + 0x33985 (tail resolved: Borland TDS v3.16 debug data, not an overlay pool); installed `MAIN.EXE` has an `FBOV` tail (80 of 295 segments overlaid) |
 | `C:\Arbeit\F030MagicCarpet` (MC) | Magic Carpet (1994/1995) | Watcom DOS/4G MZ stub + LE protected-mode image; `CARPET.EXE` has a 0x60-byte stub header, 0x2932-byte MZ load module and 0xABF6F-byte appended region containing the LE payload |
@@ -1410,6 +1410,22 @@ into a doc and believed. Several of these were live at once in UW1:
   requiring `=` in the token silently drops *every segment register* and reports
   `CS=DS=ES=SS=0000`; every linear address computed from that is then wrong, and
   looks merely odd rather than obviously broken.
+- **A segment field in a file image may be a relocation target.** F3's RTLink
+  directory stores each overlay's load segment in a word the MZ relocation
+  table fixes up (70 of 70 records). A residency probe that addressed
+  `load_segment << 4` straight from the file sampled 0x46F0 bytes below every
+  real destination, still reported 64/64-byte matches for three segments, and
+  those were written up as residency. The loader trace put every load at the
+  relocated segment. Check any segment or pointer field against the relocation
+  table before using it as an address, and confirm a memory match at the
+  loader's own write. *(F3 `analysis/executable.md`, corrected 2026-09-13.)*
+- **A declared size past EOF can be the loader's normal path.** F3's last RTLink
+  record declares nine bytes more than the file holds. The loader reads whole
+  paragraphs and tests only CF after `INT 21h AH=3Fh`, so DOS's short count is
+  accepted and the nine bytes are never written, while its relocation reads do
+  compare AX with CX. Settle a container size mismatch at the read that
+  consumes it (requested CX, returned AX, CF, destination bytes) rather than
+  inventing padding. *(F3 `1AA3:036A`, traced 2026-09-13.)*
 
 ## 8. Porting: the phase playbook
 
