@@ -1044,6 +1044,25 @@ exactly, and the breakpoints, armed under `-S` before DOS had loaded the
 program, produced no stray hits from boot. *(F3 `work/rtlink_dispatch_trace.py`,
 2026-09-13.)*
 
+**Make the shipped game take its own screenshot from the stub.** If the
+original has a developer capture routine behind a key gate, do not patch the
+gate out: break where the frame loop calls the gate, and when the replay
+cursor reaches the frame you want, write the gate's key-state and feature bytes
+through the `M` packet. Let the writer run, release the key the same way at
+its wait-for-release loop, and restore the bytes. The executable stays
+byte-identical, and the page lands at a known replay record instead of "one
+frame in N". Read the listing for *which* page it saves. Comanche's writer
+reads `[0x19CA8] XOR 0x7D00`, the page on screen, because the flip at
+`00015BF7` has already turned `[0x19CA8]` to the next draw page. So a capture
+at the gate on loop N+1 is loop N's published frame, and it pairs with the
+port's publish at the same cursor. Run the guest on a scratch copy of the disk
+image, because the game writes the file there. Pair it by cursor and check
+the phase: records N-1 and N+1 must both score worse than N. Then let the
+static cockpit settle the display window. Only one horizontal offset makes it
+match (Comanche: page x 4, the CRTC start's `+1` byte, 87 % of cockpit rows
+against at most 61 % for any other). *(CMN `work/capture_dos_frame.py`,
+2026-09-22.)*
+
 *(The QMP-not-gdbstub preference recorded above is a Windows-build caveat about
 dropped commands — on macOS and Linux the stub is dependable, and for
 breakpoints there is no QMP alternative to fall back on.)*
@@ -1450,8 +1469,19 @@ load-bearing policies, so their names are known here:
   reconstruction invariant where available, but it does not by itself prove
   code classification or semantics; keep independent entry-point evidence,
   data guards, residue classes and runtime witnesses.
+- **Keep discovery broad and proof route-scoped** (METHOD.md §0.3). Map enough
+  of the selected build, loader/address spaces, entry and dispatch landmarks,
+  resources and recovered functions to distinguish unknown paths from absent
+  ones. Preserve every recovered function in the inventory, but do not require
+  whole-game disassembly, decompilation or contracts before the first supported
+  slice. Deeply resolve the active route's transitive dependency closure; keep
+  unrelated functions explicitly identified, unproven or deferred. Exclude a
+  path only with evidence tied to the declared build/configuration, never merely
+  because one trace did not reach it. Grow the supported route after each
+  connected result passes cumulative regression; counts and coverage are
+  inventories, not delivery measures.
 - **Plan the transitive dependencies of one connected route** (METHOD.md
-  §0.1–§0.2). Start at boot or the last verified checkpoint and name the next
+  §0.1–§0.3). Start at boot or the last verified checkpoint and name the next
   player-visible result and integration symbol. Include state producers,
   resources, indirect dispatch, callbacks/interrupts, input/timing and the
   build/capture tools, not just direct callees. Link each required edge to its
