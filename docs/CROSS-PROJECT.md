@@ -1060,8 +1060,33 @@ image, because the game writes the file there. Pair it by cursor and check
 the phase: records N-1 and N+1 must both score worse than N. Then let the
 static cockpit settle the display window. Only one horizontal offset makes it
 match (Comanche: page x 4, the CRTC start's `+1` byte, 87 % of cockpit rows
-against at most 61 % for any other). *(CMN `work/capture_dos_frame.py`,
-2026-09-22.)*
+against at most 61 % for any other). Then register **every layer
+separately**: Comanche's cockpit matched at x 4 and its terrain peaked at x 0,
+98.4 % against 75 %. The port had put the two layers in different coordinate
+frames, and a whole-frame score had blamed the shift on the renderer.
+*(CMN `work/capture_dos_frame.py`, 2026-09-22.)*
+
+**A scan that starts at N over N-entry arrays owns a phantom slot.** When a
+game keeps its objects as parallel arrays of N entries, indexed 0..N-1, and
+an allocator scans from N downward, "slot N" reads and writes element 0 of
+each NEXT array. Its fields alias consistently, so it usually behaves like a
+real slot. But its "free" test reads some other array's element 0, and
+whatever writes that byte decides whether the slot is taken. Comanche's
+launchers scan from 0x82 over 0x82-entry arrays, so slot 130's active byte
+is slot 0's sprite byte. A countermeasure flare the port did not have held
+it for 230 records, and every weapon launch after that took a different slot
+number. The launched fields matched DOS 35/35 even so. Diffing active bytes
+around the handler call exposes it ("slot 0 also became active"). A `Z2`
+write watchpoint on the aliased byte names the writer in one run.
+*(CMN `work/trace_weapon_fire.py`, 2026-09-22.)*
+
+**The re-trigger trap is not QEMU-specific.** Hatari chaining one `:once`
+breakpoint per event from inside the previous one's script has the same
+failure: a breakpoint armed at the PC just stopped on fires again at once,
+and every "event" is the first one. Arm the next event's breakpoint on a
+different PC (the routine's entry, from a stop at its exit). One run of
+chained entry/exit pairs then dumps state before and after every call.
+*(CMN `tools/check-weapon-launch.py`, 2026-09-22.)*
 
 *(The QMP-not-gdbstub preference recorded above is a Windows-build caveat about
 dropped commands — on macOS and Linux the stub is dependable, and for
@@ -1469,6 +1494,55 @@ load-bearing policies, so their names are known here:
   reconstruction invariant where available, but it does not by itself prove
   code classification or semantics; keep independent entry-point evidence,
   data guards, residue classes and runtime witnesses.
+- **Automate checked work inside the active slice** (METHOD.md §0.4, §4.3b).
+  F030CT's 65816-to-68030 translator supplies useful patterns: byte-checked
+  placement, context-aware discovery, source emission and diagnostic stops.
+  Prefer deriving maps, tables, fixture plumbing and suitable native code over
+  repeated transcription. Pilot one recovered routine or recurring idiom with
+  retained DOS captures and a passing semantic JavaScript fixture; compare the
+  native output before expanding. Measure saved work and resource cost. A
+  whole-game x86 translator or mechanical JS compiler is not required, and
+  the mandatory DOS → contracts → DOS-validated JavaScript → native m68k chain
+  remains unchanged. F030CT is an external technique provider, not a new
+  `TARGETS` member or a claim of verified DOS behaviour. See the source-backed
+  review in `../F030Method/analysis/f030ct-translator-review.md` (2026-09-27).
+- **An entry has an execution context** (METHOD.md §2.6). Carry the DOS
+  image/overlay identity, mode, widths, segment/address state and calling/stack
+  effects needed to interpret it. Contexts qualify the canonical DOS function
+  ID; they do not replace it. Keep varying values dynamic where verified
+  helpers suffice; merging contexts must not lose successors or guess state.
+  Record indirect targets per site with their pointer/table producer, index
+  domain, extent, exits and evidence. CT's battle table was read as 12 of 122
+  entries because handlers were left as data; interior labels truncated other
+  tables. Heuristic scans and port-runtime misses are recovery candidates,
+  not original-execution evidence. A trace missing an edge cannot exclude it.
+  Runtime-generated or patched code also needs evidenced bytes, lifetime and
+  invalidation/variant selection; a short entry signature cannot validate the
+  whole mutable routine.
+- **Generated code needs reproducible inputs and an unresolved-work report**
+  (METHOD.md §4.3b). Retain generator/helper/toolchain identities, deterministic
+  sources/maps, linked PC ranges mapped to DOS IDs/contexts, and separate
+  decoded, implemented and DOS-validated coverage. Give each unsupported
+  operation, exit, target or code variant its blocking route and next probe.
+  Diagnose unsupported execution at the target/harness boundary with source
+  identity and state; never turn it into a no-op or successful return. These
+  stops are not new error paths in recovered DOS functions (§4.2c). Supported
+  scope has no reachable unresolved item. A clean miss log or a zero exit from
+  a bounded discovery loop is not proof of closure. New lowering/helper rules
+  pass discriminating DOS fixtures in JavaScript and assembled native code;
+  two implementations sharing an emitter can share the same error.
+- **Debug the first semantic divergence** (METHOD.md §4.5a). Align DOS,
+  JavaScript and target at the same logical checkpoint/event phase, capture
+  coherent state and use region hashes → first unequal checkpoint → byte/field
+  diff → writer watchpoint → canonical source function. Retain the failure as
+  a regression. Compare game state, commands/events and rendering separately:
+  CT could render its own state exactly while scripts stalled, and independent
+  SNES runs exposed timing drift missed by internal renderer checks. Nearby
+  frame searches, tolerant pictures and mixed-time snapshots diagnose issues;
+  they cannot satisfy DOS parity. Record justified field exclusions, unmatched
+  checkpoints and semantic completion (a full in-scope cycle or transition),
+  not just host frames. Do not import SNES NMI/lag/scanline approximations into
+  the DOS timing contract.
 - **Keep discovery broad and proof route-scoped** (METHOD.md §0.3). Map enough
   of the selected build, loader/address spaces, entry and dispatch landmarks,
   resources and recovered functions to distinguish unknown paths from absent
@@ -1510,6 +1584,15 @@ load-bearing policies, so their names are known here:
   transfers, waits and composition when judging an offload. A budget failure
   calls for a measured mechanism change or an explicit support limitation,
   never altered game ticks or semantic shortcuts.
+- **Optimize translated mechanisms with their full calling context**
+  (METHOD.md §4.6a). Budget context/code growth and helper overhead; verify
+  liveness, block fusion and direct memory/I/O paths across indirect callers,
+  interrupts and non-local exits. Keep a conservative comparison mechanism
+  and run rule fixtures plus the connected route after combined changes.
+  SMW's reference interpreter traced an apparent liveness failure to an
+  emitter carry-merge bug; that historical result is not a measurement of
+  CT's current conservative liveness pass. Report game updates, interrupts,
+  consumed inputs and published pictures separately from renderer throughput.
 - **Trace the milestone route before generating sources.** Before creating or
   changing JavaScript or M68k source for a milestone, run the authoritative
   DOS path under QEMU execution tracing — the `dos/trace/` TCG plugin, or
@@ -1518,9 +1601,10 @@ load-bearing policies, so their names are known here:
   inputs and state/memory snapshots. Record reached function entries, indirect
   callbacks, resource reads/pointers, state transitions, and frame order in a
   durable, committed route manifest. Generate only the JS/M68k contracts
-  represented by that route; unreached or unexplained code stays
-  `dormant`/`Unproven` and cannot support the milestone. Browser and target
-  experiments validate the route; they do not define it. *(CMN
+  represented by that route's dependency closure; statically possible edges
+  missing required witnesses remain blockers, not exclusions. Unreached or
+  unexplained code stays `dormant`/`Unproven` and cannot support the milestone.
+  Browser and target experiments validate the route; they do not define it. *(CMN
   `docs/RE-WORKFLOW.md` §Trace the milestone route before porting; upstreamed
   2026-08-26 from an edit made in CMN's generated copy.)*
 - **Fidelity is an observable contract.** Preserve rules, ordering, arithmetic
