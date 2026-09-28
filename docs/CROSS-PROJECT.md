@@ -1117,6 +1117,17 @@ breakpoints there is no QMP alternative to fall back on.)*
   independently of those flags. Reload/test the counter at the branch and
   verify exact transition ticks, not merely that the demo eventually starts.
   Evidence: CMN `analysis/functions/falcon-attract.md`, countdown correction.
+- **An `AUTO` folder in the emulated drive runs instead of the program under
+  test.** TOS boots `C:\AUTO\*.PRG` before the program Hatari is told to
+  start. A program there that never returns means the named one never runs,
+  and nothing reports it. CMN had a stale `release/AUTO/GAME.PRG` that no tool
+  wrote. It was dated four weeks earlier, so every frame-grabber capture from
+  `release/` since then may show that old build. A before/after comparison
+  came out byte-identical however much had changed. Make capture scripts refuse a non-empty `AUTO` in the drive they
+  mount. Treat a before/after comparison that shows no change as a reason to
+  prove the new binary ran - for example, force a visible change and check it
+  appears - not as proof that the change is neutral.
+  Evidence: CMN `analysis/functions/falcon-attract.md`, "MFD bodies".
 - **Reading rendered digits at thumbnail scale.** F29's debug font is 4×5
   pixels; screenshots produced real misreadings — "913" for "013", "12352" for
   "12952" — that looked exactly like plausible bugs. Crop and upscale before
