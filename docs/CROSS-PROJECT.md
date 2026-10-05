@@ -280,6 +280,18 @@ a prologue is shape evidence only. Report coverage next to the data guard, and
 say what the guard does not cover. *(PG `tools/re/disasm_le.py`,
 `analysis/executable.md`, 2026-10-05.)*
 
+**A 32-bit ratchet needs no listing parser: one slot per instruction.** Emit each
+instruction followed by `times (16 - ($-$$) % 16) % 16 db 0`, assemble once with
+`nasm -f bin`, and compare slot *i* with instruction *i*'s original bytes; a wrong
+length cannot shift a neighbour and the `nasm -l` continuation-line traps never
+arise. Branches `$`-relative with an explicit `short`/`near`; wide immediates need
+`strict dword`/`strict word` (`dword` alone is optimised away on `sub esp, 4`);
+a disp32 on a small displacement needs `dword`. Watcom's direction-bit register
+forms (`8B EC`, `03 D3`) cannot be selected in NASM: 678 of PG's 97,013
+instructions (0.7%), emitted as `db` with the mnemonic kept and counted apart
+from true demotions. Result: 99.24% exact, 64 demoted, whole object byte-equal.
+*(PG `tools/re/ratchet_le.py`, 2026-10-05.)*
+
 **A bound DOS/4GW exe holds two executables: find the LE's base before
 trusting `data_pages_off`.** In `PANZER.EXE` the extender itself is the first
 0x344A4 bytes; the game is a second `MZ` at 0x344A4 with its `LE` header 0x2998
