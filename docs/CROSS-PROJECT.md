@@ -19,7 +19,7 @@ tree is supporting evidence, never a replacement for the DOS oracle:
 | `C:\Arbeit\F030MagicCarpet` (MC) | Magic Carpet (1994/1995) | Watcom DOS/4G MZ stub + LE protected-mode image; `CARPET.EXE` has a 0x60-byte stub header, 0x2932-byte MZ load module and 0xABF6F-byte appended region containing the LE payload |
 | `C:\Arbeit\F030WC1` (WC1) | Wing Commander (1990) | 302 KB 16-bit MZ, Borland TC++ 1990 — `WC.EXE` is the authority; `../wc1-re` is a 1996 Win32 reconstruction used as graded supporting evidence |
 | `C:\Arbeit\F030ICR` (ICR) | IndyCar Racing v1.05 (1994) | three 1.44 MB DOS floppy images → installed `INDYCAR.EXE` (742,377 B): Watcom C/C++32, DOS/4GW MZ stub + LE module (LE header at 0x27BDC, two objects) |
-| `C:\Arbeit\F030PanzerGeneral` (PG) | Panzer General (1994) | Watcom DOS/4GW MZ bootstrap + LE module; 0x344A4-byte trailing overlay outside the declared LE end, runtime classification TBD |
+| `C:\Arbeit\F030PanzerGeneral` (PG) | Panzer General (1994) | DOS/4GW extender (0x344A4 bytes) + the game's own bound MZ/LE executable at 0x344A4; no trailing overlay once the LE base is corrected |
 
 WC1 is in this table because it is the family's worked example of a helpful but
 non-authoritative reconstruction. Its 1996 Win32 source can accelerate reading
@@ -266,6 +266,21 @@ patched at load time (§3). *(TIE `work/audit_headers.py` /
 same audit caught a second instance in the same repo: `TIE.EXE`'s "8-entry
 pointer table @ 0x20" was its MZ relocation table, and its "e_lfanew 0x39EC"
 was relocation data — with `e_lfarlc = 0x20` the table starts *before* 0x3C.)*
+
+**A bound DOS/4GW exe holds two executables: find the LE's base before
+trusting `data_pages_off`.** In `PANZER.EXE` the extender itself is the first
+0x344A4 bytes; the game is a second `MZ` at 0x344A4 with its `LE` header 0x2998
+bytes in, and `data_pages_off` is relative to that second `MZ`. Read as an
+absolute file offset the identity above fell 0x344A4 short and the missing
+bytes were filed as an unexplained "trailing overlay" — a tail whose size
+equals the base is the giveaway. Solve the identity for the base (`filesize −
+(data_pages_off + (pages−1)*page_size + last_page_bytes)`), check an `MZ` is
+there, and check the LE entry lands on a plausible start (Watcom: `EB xx` over
+`WATCOM C/C++32 Run-Time system`). Then verify against a RAM dump: with fixups
+applied, every byte that differs from the file must lie on a fixup site, and
+the load base is page-aligned (PG object 1 at 0x17D000, object 2 at 0x1E0000).
+A header offset that gives an entry mid-instruction is the wrong base, not a
+packed file. *(PG `work/le_map.py`, `analysis/executable.md`, 2026-10-05.)*
 
 **For a Phar Lap tail, parse adjacent `P3` records and separate runtime blocks
 before disassembling.** Links 386's appended region is an exact two-record
