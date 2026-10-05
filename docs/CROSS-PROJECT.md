@@ -1595,6 +1595,41 @@ load-bearing policies, so their names are known here:
   remains unchanged. F030CT is an external technique provider, not a new
   `TARGETS` member or a claim of verified DOS behaviour. See the source-backed
   review in `../F030Method/analysis/f030ct-translator-review.md` (2026-09-27).
+- **Reuse the Falcon audio work before writing a sound engine.** F030OPL2
+  runs a nine-voice OPL2 on the DSP (49.17 kHz) with a stamped-register-write
+  decoder and a register-trace player, and already plays Miles XMIDI converted to
+  SMF. Treat its results as self-consistency (DSP output equal to its own
+  block-rate integer host model; no listening test; instruments from ScummVM's
+  General MIDI bank, and `xmi2mid.py` drops XMIDI controllers 110-120), not as
+  fidelity to a game. For a Miles title capture the game's own OPL register
+  writes in the DOS oracle (QEMU has an `adlib` device) and replay them through
+  its `trace` mode; the Miles timbre bank (`STDPATCH.AD`) is parsed by ScummVM's
+  `miles_adlib.cpp`. Live MT-32 synthesis reaches only about 2-4 notes; treat
+  AdLib as the supported device and MT-32 as prerender or sample-bank. See
+  `../F030Method/analysis/sibling-port-lessons.md` and PG `analysis/audio.md`.
+- **Time DSP work only under the DSP-calibrated Hatari.** Stock Hatari runs the
+  56001 at twice hardware speed and mis-models the host port; F030Arcade keeps a
+  calibrated fork and F030TREX measured a first hardware run 2.06x slower than
+  the emulator with identical output bytes. Gate a DSP kernel with a host C model,
+  a bit-exact word comparison on random frames and a cycle profile between
+  labels (F030OPL2 `rt-bench-gate.py`, F030SID `profile_dsp.py`). Check that a
+  run used the calibrated binary before quoting a timing.
+- **A native routine can be checked in place.** Run it, restore state, run the
+  translation, compare memory (F030CT `natives.txt`, `CTX_LZ_CHECK=1`: 311 of
+  340 calls identical, about 10x per call). It suits hot decompressors and
+  `rep movs` loops. Test a hand routine alone by extracting it by label, using
+  synthetic inputs and letting the stub callee clobber every register outside the
+  routine's contract (F030Arcade `DEBUGGING.md`). A ten-line NatFeats call prints
+  to Hatari's stderr (F030CT `falcon/tctest.s`).
+- **Sound-driver transport.** Drop unchanged register writes, stamp each write
+  with the driver's clock, pump a queue from a timer without waiting for DSP
+  replies, batch writes, and pace the driver from a clock, not a call count
+  (F030Arcade `PORTING.md`, "Sound strategy"). AIL's per-tick register uploads
+  have the same shape.
+- **Endianness: keep guest memory little-endian.** Use `move.w` plus `ror.w #8`
+  for 16-bit access and a big-endian twin view for read-only tables; byte swaps
+  were 9% of F030CT's instructions (`analysis/translator-speedup.md` there);
+  lazy swapping per register is untested. Never read or write structs raw.
 - **An entry has an execution context** (METHOD.md §2.6). Carry the DOS
   image/overlay identity, mode, widths, segment/address state and calling/stack
   effects needed to interpret it. Contexts qualify the canonical DOS function
