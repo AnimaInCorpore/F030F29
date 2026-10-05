@@ -582,6 +582,19 @@ Three techniques inside it generalise beyond DOS:
   this was believed). What works: files the guest writes, read back with mtools;
   QMP `screendump`; and `pmemsave 0xB8000` decoded as 80×25 text.
 
+**A startup hang in the oracle may be a missing peripheral, not a loader
+bug.** PG stalled on its first `Delay` for weeks while the notes chased the
+extender's IRQ0 path. The timer ISR was registered by an init routine that
+began `int 33h, AX=0` and returned early unless `AX == 0xFFFF`; the oracle had
+no mouse driver, so the tick callback never existed. Read the stalled
+routine's *writer* (here the only `inc` of the tick word), find who registers
+it, and then check what that registrar tests first. The stalled-RAM dump
+showed it directly: the middleware's timer table (Miles AIL, 16 slots) held
+two callbacks and not the tick one, and the master ISR *was* running, which
+ruled out the interrupt path. A 43-byte hand-assembled INT 33h TSR was enough
+to reach the menu; the same applies to missing EMS/XMS, sound and CD checks.
+*(PG `analysis/executable.md`, 2026-10-05.)*
+
 **Check the CPU mode before believing a linear address.** `gdbstub_probe.py`
 was written against real-mode targets and computed every address as
 `(selector << 4) + (EIP & 0xFFFF)`. Against ICR — DOS/4GW, 32-bit flat, image
