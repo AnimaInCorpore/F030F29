@@ -296,13 +296,15 @@ from true demotions. Result: 99.24% exact, 64 demoted, whole object byte-equal.
 read the globals out of a RAM dump taken in the route's state.** PG's 66
 data-pointer calls had no writer in the decoded code. Three sources settled them:
 initialised pointer data (fixups in the data object), `mov [g], imm32` stores with
-a fixup, and the live values of the globals at the main menu. Nine globals held
-addresses above the image's end whose code does VGA port I/O: a display driver
-loaded at run time (probably the shipped `A32GFX.DLL`), so 49 sites are the driver
-API and must be recovered from the DLL or the RAM image, not from the EXE. Record
-such pointers as a separate `DYNPTR` kind, not as code seeds, and say which state
-the dump came from: other globals read 0 at the menu. *(PG `re/seeds.txt`,
-`analysis/executable.md`, 2026-10-05.)*
+a fixup, and the live values of the globals at the main menu. Thirteen consecutive
+globals held addresses above the image's end: the export vector of a display driver
+the game loads itself (`LIB/DRV/VESA480.DLL`, an `LX` file with no entry table).
+Search the game tree for the loaded code's bytes to name the file; a first guess
+from a file name (`A32GFX.DLL`) was wrong. Apply the DLL's fixups at the inferred
+base and compare with RAM: code pages matched exactly, only run-time data differed.
+Record such pointers as a separate `DYNPTR` kind, not as code seeds, and say which
+state the dump came from: other globals read 0 at the menu. *(PG `re/seeds.txt`,
+`analysis/display-driver.md`, 2026-10-05.)*
 
 **A bound DOS/4GW exe holds two executables: find the LE's base before
 trusting `data_pages_off`.** In `PANZER.EXE` the extender itself is the first
