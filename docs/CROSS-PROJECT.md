@@ -267,6 +267,19 @@ same audit caught a second instance in the same repo: `TIE.EXE`'s "8-entry
 pointer table @ 0x20" was its MZ relocation table, and its "e_lfanew 0x39EC"
 was relocation data — with `e_lfarlc = 0x20` the table starts *before* 0x3C.)*
 
+**On an LE image the fixup table proves switch tables and exposes address-taken
+data.** PG's Watcom code switches with `jmp dword ptr cs:[eax + table]`: a fixup
+sits on the displacement, a `cmp reg,N` / `ja` bound precedes it, and every
+entry is itself a fixup into the code object. Requiring all three resolved 26
+tables from 15 seeds and lifted descent coverage from 61.8% to 81.6% with no
+known-data region decoded. Two cautions: of 224 undecoded fixup targets in the
+code object only 4 began like a function (most are strings and tables), so do
+not promote address-taken targets to seeds; and 207 of 635 recovered functions
+lacked `push ebp; mov ebp,esp` (middleware and runtime use other prologues), so
+a prologue is shape evidence only. Report coverage next to the data guard, and
+say what the guard does not cover. *(PG `tools/re/disasm_le.py`,
+`analysis/executable.md`, 2026-10-05.)*
+
 **A bound DOS/4GW exe holds two executables: find the LE's base before
 trusting `data_pages_off`.** In `PANZER.EXE` the extender itself is the first
 0x344A4 bytes; the game is a second `MZ` at 0x344A4 with its `LE` header 0x2998
