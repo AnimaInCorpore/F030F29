@@ -1094,6 +1094,24 @@ breakpoints there is no QMP alternative to fall back on.)*
 
 ## 7. Traps that cost real time
 
+- **Inspect executable alignment padding before benchmarking it.** A mnemonic
+  such as `cnop` does not establish which bytes the selected assembler actually
+  emits. CMN's 2026-09-30 alignment experiment emitted zero words in TEXT;
+  execution decoded an `ORI.B` across the first sample instruction and skipped
+  its coordinate load. The same-record silhouette comparison caught the change.
+  Branching over padding restored equality, but alignment did not speed up the
+  measured loop, so the experiment was rejected. Scope: this toolchain/build,
+  not a claim about every vasm version. See CMN
+  `docs/PERFORMANCE-2026-09-30.md`, marcher hotspot investigation.
+- **Profile steady replay work separately from resource transitions.** Use
+  instruction-bound endpoints at the same replay records for every build and
+  setting, and retain both guest cycle totals and VBL deltas. A view change can
+  reload and remap an authored console inside the interval: CMN's 2026-09-30
+  records 30..40 assigned 42% of cycles to palette remapping, whereas the
+  steady 60..80 interval had no such cost. That first interval measures the
+  transition, not sustained rendering. Report which view and settings were
+  sampled; emulator host fast-forward time is not target frame time. Evidence:
+  CMN `docs/PERFORMANCE-2026-09-30.md` (cycle-exact Hatari; hardware unverified).
 - **Byte order belongs to a declared representation boundary.** DOS x86
   fields are little-endian; MC68030 and MC68060 native state is big-endian.
   Decode numeric fields with their widths and signedness, then calculate with
@@ -1128,6 +1146,38 @@ breakpoints there is no QMP alternative to fall back on.)*
   prove the new binary ran - for example, force a visible change and check it
   appears - not as proof that the change is neutral.
   Evidence: CMN `analysis/functions/falcon-attract.md`, "MFD bodies".
+- **Compare a faster build at a game-clock point, not at a VBL.** When the
+  simulation advances one tick per rendered frame, a speed-up changes which
+  game frame is on screen at every VBL. CMN's marcher rewrite produced exactly
+  the same pixels and silhouette as the old build. A VBL-keyed capture still
+  differed by 1,000-8,600 pixels in every frame, because the faster build was
+  further into the replay. Break on the game's own clock instead: CMN's
+  `tools/probe-record.sh` stops at a routine when the replay cursor reaches
+  record K and dumps the buffer there. A speed change is then proven neutral
+  by byte equality, and a real fault is not lost among timing differences.
+  Evidence: CMN `analysis/functions/falcon-attract.md`, "The marcher, made
+  fast".
+- **On a 68030 a cold path can evict the hot loop that calls it.** The
+  instruction cache is 256 bytes, direct-mapped by address bits 4-7, so code
+  anywhere in memory that shares those bits competes for the same lines. CMN's
+  terrain column loop called a span writer 900 bytes away. Every call (23% of
+  samples) evicted the loop, and Hatari's profile showed the loop's
+  instructions missing at the paint rate. Look at per-instruction i-cache
+  misses before tuning instructions. Put the cold path inline next to the loop,
+  and keep loop plus cold path within 256 bytes. That, together with keeping
+  loop state in registers, made the marcher 3.1× faster with identical output.
+  Evidence: CMN `analysis/functions/falcon-attract.md`, "The marcher, made
+  fast".
+- **Price a DSP route by its transport before designing its kernel.** A
+  Falcon DSP kernel is only as fast as the bytes it can receive and return.
+  Count both per frame at the measured rate: host port 0.5-2.3 µs per word,
+  and SSI DMA about 786 KB/s each way with the CPU asleep or about 375 KB/s in
+  handshake mode with it busy (ScummVM `ssi-dma-c2p`, Hatari). CMN's terrain
+  needs 96 KB in and 54-108 KB out per frame, which caps an SSI route at
+  7-15 fps before any computation. The DSP pays where input and output are
+  small against the work, not where the work is gathering from a map it
+  cannot hold. Evidence: CMN `docs/DSP-EXECUTION-PLAN.md`, "2026-09-28: the
+  terrain stays on the CPU".
 - **Reading rendered digits at thumbnail scale.** F29's debug font is 4×5
   pixels; screenshots produced real misreadings — "913" for "013", "12352" for
   "12952" — that looked exactly like plausible bugs. Crop and upscale before
@@ -1752,6 +1802,21 @@ load-bearing policies, so their names are known here:
   and target boundaries, outside the semantic function path. A boundary guard
   required to prevent a host crash is a documented target artefact, never
   invented DOS error handling.
+- **Merge recovered implementations at their contracts, including consumers.**
+  CMN's 2026-09-30 audit/mainline merge combined a byte-sized DOS terrain
+  silhouette with a separate word-sized target-view archive. Sprite clipping
+  must convert the main-view page row while retaining the target-view screen
+  row; choosing one conflict side globally loses that distinction. Likewise,
+  independent camera implementations must consolidate on one coordinate/state
+  contract, and fixtures must follow the recovered displayed crop and authored
+  slot ownership. Evidence: CMN's
+  `analysis/functions/falcon-attract.md#audit-branch-integration-2026-09-30`,
+  browser proof gate and native build. This is an integration lesson, not fresh
+  certification of DOS frame parity.
+  Its native terrain gate now captures at the completed terrain's object-pass
+  boundary: a fixed VBL first sampled the wrong map, then loaded map state
+  before a completed march. The instruction-bound sample matched all 20,608
+  scored terrain columns. Asset loading alone does not prove render completion.
 - **An interrupt-driven effect needs an independent clock and every visible
   consumer.** CMN's 2026-09-07 review found that the DOS shake PRNG/countdown
   ran from a PIT ISR, while the native port advanced it per rendered frame
