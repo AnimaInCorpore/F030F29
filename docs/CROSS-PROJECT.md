@@ -1778,6 +1778,22 @@ load-bearing policies, so their names are known here:
   blind, so pick mutations from paths the fixtures reach, replace every
   occurrence rather than the first, and record the blind ones as domain limits
   to be closed by the next witness (here a draw entirely outside its clip).
+- **Translate around a function you cannot yet translate with a named boundary,
+  and place the captured state at the DOS virtual base.** PG's compositor
+  (`sub_00014BF6`) calls a present function (`sub_000481AB` -> a 454-instruction
+  dirty-rect blitter with a software cursor and indirect driver calls) that the
+  translator refuses. A translator option makes calls to it `bsr boundary_<name>`,
+  the harness supplies a stub that logs the call arguments, and the gate checks
+  the DOS argument sequence (`al` = 4, 3, 2, 1) as the only claim about the
+  boundary; the ledger says the screen path is unverified. The same gate settled
+  pointer representation for generated code: the harness places the arena and
+  the heap objects at their DOS virtual addresses (14 MB Falcon in Hatari; the
+  harness checks it ends below the arena), so every pointer DOS stored in memory
+  is a valid native address and no rebasing rule is needed. It passed on the first
+  run, and four mutations (a dropped draw, a wrong record stride, a changed or
+  skipped present call) failed it. Capture details: dump the windows the call can
+  read (rect records, globals, pointers) at entry and after, size shape data by
+  the table's next entry, and skip witnesses whose call changed no pixel.
 - **Read `$+N` in a nasm-style listing as relative to the instruction's own
   address.** PG's `object1.asm` prints `call $+278156`; taking it relative to the
   next instruction put every call target five bytes past the real function start
