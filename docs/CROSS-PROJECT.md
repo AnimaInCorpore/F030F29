@@ -1758,6 +1758,21 @@ load-bearing policies, so their names are known here:
   the measure. Negative controls can be blind: a 16x16 multiply in place of the
   32x32 lowering passed PG's geometry gate because no fixture operand exceeded
   2^16; record that as a domain limit of the evidence, not as a validated rule.
+- **The first fixture for an unported function will find a wrong rule; collect it
+  early and mutate executed paths.** PG's clipped shape draw (`sub_00058AB4`, 1,017
+  bytes, plus its row copy) had no hand port. An entry/exit probe captured eleven
+  connected witnesses (arguments, the shape bytes up to the next table entry, the
+  destination bitmap before and after via `pmemsave`, EAX); the generated code
+  failed every non-trivial case because `mov ah, al` was lowered as a rotate of
+  the destination before reading the source that shares it, a rule the seven
+  hand-ported functions never used. One fix, all 179,087 bytes equal: the first
+  work the translator saved. Negative controls then showed which mutations the
+  witnesses can see (dword fills and copies as bytes, inverted branches: 85k to
+  122k bytes) and which they cannot (the signed-multiply fix-up, the `adc` in the
+  clipping path, a captured `sle` versus `slt`): a mutation on an unexecuted path
+  or an unreached value is blind, so pick mutations from paths the fixtures
+  reach, replace every occurrence rather than the first, and record the blind
+  ones as domain limits to be closed by the next witness (here a clipped draw).
 - **Read `$+N` in a nasm-style listing as relative to the instruction's own
   address.** PG's `object1.asm` prints `call $+278156`; taking it relative to the
   next instruction put every call target five bytes past the real function start
