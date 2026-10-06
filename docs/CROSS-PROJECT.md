@@ -1731,19 +1731,33 @@ load-bearing policies, so their names are known here:
   conditions after `inc`/`dec` are refused. Every emitted line carries the DOS
   address and bytes, and an ABI shim can map a hand port's calling convention onto
   the generated body so that `--translated` drops it into the existing native
-  fixture harness. Five functions (three RNG, two string helpers) then pass the
-  same DOS fixtures, and changing one constant in the generated source makes the
-  gate fail (run the unmutated control first: an absent output file can be a
-  broken harness, not a detection). It has saved no work yet, because those
-  functions already had hand ports; the first real test is a function nobody
-  ported by hand. Fit: the instruction frontend suits 32-bit protected-mode
-  builds (PG, TIE, MC, ICR, CMN's flat program, L386); the loaders, relocation
-  sources and containers differ per build. The 16-bit real-mode builds (POR, UW1,
-  UW2, F29, F3, LOL, WC1) need a different frontend (segments, overlays) and are
-  not covered. Keep per-build data (executable hash, function inventory,
-  relocation source, ABI shims) in each project and extract a shared tool only
-  after a second consumer validates its own contracts (DEPENDENCIES.md). Evidence:
-  PG `analysis/x86-translation.md`.
+  fixture harness. Seven functions (three RNG, two string helpers, two geometry
+  functions with `ebp` frames) pass the same DOS fixtures as their hand ports;
+  mutating one generated rule makes the gate fail (run the unmutated control
+  first: an absent output file can be a broken harness, not a detection). Fit:
+  the instruction frontend suits 32-bit protected-mode builds (PG, TIE, MC, ICR,
+  CMN's flat program, L386); the core is split from a per-build adapter (image
+  and hash, function table, fixup sites -> (object, offset), the data object in
+  a0), and the loaders, relocation sources and containers differ per build. The
+  16-bit real-mode builds (POR, UW1, UW2, F29, F3, LOL, WC1) need a different
+  frontend (segments, overlays) and are not covered. Keep per-build data in each
+  project and extract a shared tool only after a second consumer validates its
+  own contracts (DEPENDENCIES.md). Evidence: PG `analysis/x86-translation.md`.
+- **Make the x86 stack little-endian bytes too, and count rules by the fixtures
+  that exercise them.** PG's first translator kept `push`/`pop` native and had to
+  refuse every `ebp` frame (4 of 9 hand-ported functions). Lowering `push` to
+  four byte stores lets `[ebp+disp]`/`[esp+disp]` operands and the argument a
+  `ret 4` pops read the same bytes DOS wrote, and the shim pushes a stack
+  argument the same way; `bsr`'s native return address is never read by a rule.
+  That one rule took the inventory sweep from 20 to 49 translatable functions and
+  the broad rule set (memory immediates, `lea`, `movsx`, high-byte registers,
+  string moves, `adc` on X, a captured `Scc` for a jump separated from its `cmp`)
+  to 344 of 643 (142 closed under calls), but only 7 have DOS evidence. So tag every lowering with a rule id and let a coverage
+  report say, per rule, which DOS-validated function exercises it: a rule used by
+  180 functions and no fixture is `Unproven`, and the implemented count is not
+  the measure. Negative controls can be blind: a 16x16 multiply in place of the
+  32x32 lowering passed PG's geometry gate because no fixture operand exceeded
+  2^16; record that as a domain limit of the evidence, not as a validated rule.
 - **Read `$+N` in a nasm-style listing as relative to the instruction's own
   address.** PG's `object1.asm` prints `call $+278156`; taking it relative to the
   next instruction put every call target five bytes past the real function start
