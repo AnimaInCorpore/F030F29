@@ -1121,6 +1121,18 @@ Twelve matching JS/m68k cases prove these two contracts, not the whole loader
 or a playable game. Evidence: PG `analysis/functions/sub_00010976.md`,
 `analysis/functions/sub_00048105.md` and `tests/fixtures/dos-geometry.json`.
 
+**Pair a call before treating a branch join as a return.** PG's SET loader
+branches to a stream-read return PC even when the layer is skipped. A checked
+PC hit alone is not a read witness: require the pending call, matching return
+boundary and balanced stack. Reset stream position by open lifetime; its CRT
+reused the SCN stream address for SET. Capturing consumer reads rather than
+only low-level disk reads recovered the header, selected layer ordering and
+owned destinations. JS and native then matched the same DOS globals, six
+arrays and 23 reads, with 52 direct string contracts. Keep runtime tables and
+allocation producers open until connected boot supplies them; an isolated
+sparse pointer arena is not a game memory budget. Evidence: PG
+`analysis/functions/sub_00037E75.md` and `tests/fixtures/dos-loader.json`.
+
 **A replay cursor is not a unique capture identity.** Comanche's four attract
 passes reuse the cursor while changing mission resources and camera. Its
 Falcon frame probe now gates publication on cursor, active replay, pass and
