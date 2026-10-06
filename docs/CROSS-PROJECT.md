@@ -1309,6 +1309,19 @@ breakpoints there is no QMP alternative to fall back on.)*
   loop state in registers, made the marcher 3.1× faster with identical output.
   Evidence: CMN `analysis/functions/falcon-attract.md`, "The marcher, made
   fast".
+- **Gate an assembler replacement per source and configuration.** Matching
+  one port does not establish toolchain-wide compatibility. Stage fresh DOS
+  and native builds without replacing releases; compare every initialized DSP
+  memory word and END entry, then pass both outputs through the actual loader
+  image generator and require identical bytes. Preserve source/include and
+  oracle hashes, flags and listings. Classify a failed original build as an
+  oracle/source blocker, not a native mismatch; a cached image is not proof
+  when the current source is absent. Evidence: ASM56000
+  `tests/asm56000/F030-AUDIT.md` (2026-10-02): F030Arcade's four programs pass,
+  but only 18/73 additional configurations match; 48 fail only natively,
+  seven SCIV variants fail in both, and both Comanche checkouts lack their
+  main DSP source. The passing SNES kernels' generated loader bytes also match.
+  Repeat with `python3 ../ASM56000/tests/asm56000/check_f030.py` from a port.
 - **Price a DSP route by its transport before designing its kernel.** A
   Falcon DSP kernel is only as fast as the bytes it can receive and return.
   Count both per frame at the measured rate: host port 0.5-2.3 µs per word,
