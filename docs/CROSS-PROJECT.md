@@ -1133,6 +1133,17 @@ allocation producers open until connected boot supplies them; an isolated
 sparse pointer arena is not a game memory budget. Evidence: PG
 `analysis/functions/sub_00037E75.md` and `tests/fixtures/dos-loader.json`.
 
+**Final random state is part of a decoded-state contract.** PG's unit-class
+setup consumes its DOS generator conditionally, including a second call before
+later scenario exclusions. Matching class bytes without the final seed can
+still leave the next simulation different. Capture entry/exit state, preserve
+iteration and call order, and compare seed writes alongside visible outputs.
+Boundary seeds and chained original-body fixtures validated 32-bit wraparound
+in JS and 68000 partial products. Raw SCN reads alone did not close this
+producer. The DOS return also retained the old AL after incrementing a local
+side byte; final memory equality did not imply return equality. Evidence: PG
+`analysis/functions/sub_0003AFF3.md`, `sub_0006337B.md` and their DOS fixtures.
+
 **A replay cursor is not a unique capture identity.** Comanche's four attract
 passes reuse the cursor while changing mission resources and camera. Its
 Falcon frame probe now gates publication on cursor, active replay, pass and
