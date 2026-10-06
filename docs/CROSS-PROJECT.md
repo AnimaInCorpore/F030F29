@@ -1102,6 +1102,24 @@ resources outside that boundary remain in the dependency investigation.
 Instrumentation also shifts wall time: confirm the retained tactical screen
 instead of inferring the phase from accepted inputs or a schedule timestamp.
 Evidence: PG `analysis/scenario-route.md` and `work/drive_menu.py` (2026-10-06).
+The follow-up paired open returns with reads, seeks and closes. Probing the
+low-level read wrapper alone saw only a sprite: the CRT streams used a separate
+DOS-read wrapper. Closing both measured boundaries captured all 11,604 bytes
+of five selected files, equal to pristine resource ranges, including a short
+final read. Save buffers before reuse, bind handles by their open/close
+lifetime, and distinguish raw-byte equality from decoded game-state contracts.
+Evidence: PG `analysis/scenario-loader.md` and `work/probe_file_io.py`.
+
+**Separate a narrowed store from the full return value.** PG's viewport extent
+helper writes little-endian 16-bit dimensions but returns the full 32-bit
+height; the maximum fixture returns `0x01000000` while storing zero. Keep
+caller clamps outside the helper, retain aliasing/store order, and use the same
+DOS-derived boundary fixtures for JavaScript and native m68k. Isolated DOS
+calls must save and restore the complete private stack region, including
+callee spills, as well as globals and registers before resuming the route.
+Twelve matching JS/m68k cases prove these two contracts, not the whole loader
+or a playable game. Evidence: PG `analysis/functions/sub_00010976.md`,
+`analysis/functions/sub_00048105.md` and `tests/fixtures/dos-geometry.json`.
 
 **A replay cursor is not a unique capture identity.** Comanche's four attract
 passes reuse the cursor while changing mission resources and camera. Its
