@@ -1765,14 +1765,19 @@ load-bearing policies, so their names are known here:
   destination bitmap before and after via `pmemsave`, EAX); the generated code
   failed every non-trivial case because `mov ah, al` was lowered as a rotate of
   the destination before reading the source that shares it, a rule the seven
-  hand-ported functions never used. One fix, all 179,087 bytes equal: the first
-  work the translator saved. Negative controls then showed which mutations the
-  witnesses can see (dword fills and copies as bytes, inverted branches: 85k to
-  122k bytes) and which they cannot (the signed-multiply fix-up, the `adc` in the
-  clipping path, a captured `sle` versus `slt`): a mutation on an unexecuted path
-  or an unreached value is blind, so pick mutations from paths the fixtures
-  reach, replace every occurrence rather than the first, and record the blind
-  ones as domain limits to be closed by the next witness (here a clipped draw).
+  hand-ported functions never used. One fix, all bytes equal: the first work the
+  translator saved. A second capture from a later route checkpoint
+  (`--shape-contracts axis_turn`) added the table-mapped sibling primitive and
+  clipped draws (x = -45), 32 witnesses and 271,911 bytes in all, with the
+  function's one global (a 256-byte table) read at entry and staged in the
+  harness arena. Negative controls then showed which mutations the witnesses can
+  see (dword fills and copies as bytes, inverted branches: 105k to 145k bytes)
+  and which they cannot even with clipped draws (the signed-multiply fix-up, the
+  `adc` chains that build a trivial-reject mask no witness sets, a captured `sle`
+  versus `slt`): a mutation on an unexecuted path or an unreached value is
+  blind, so pick mutations from paths the fixtures reach, replace every
+  occurrence rather than the first, and record the blind ones as domain limits
+  to be closed by the next witness (here a draw entirely outside its clip).
 - **Read `$+N` in a nasm-style listing as relative to the instruction's own
   address.** PG's `object1.asm` prints `call $+278156`; taking it relative to the
   next instruction put every call target five bytes past the real function start
