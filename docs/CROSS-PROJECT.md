@@ -1080,6 +1080,39 @@ things make it reliable:
   trace's `Trace 0: [cs_base/pc/...]` second field is **linear**, and reading it
   as EIP is off by the base.
 
+**A live IRQ does not prove the game's timer callback is registered.** Panzer
+General's no-sound DOS oracle delivered IRQ0 and ran a 17-slot dispatcher,
+but its splash counter stayed zero. The mouse-reset failure returned before
+registering the callback that incremented that counter. Loading pinned
+CuteMouse 2.1b4, without changing game bytes, installed the missing active slot;
+a write watch caught the increment and the original reached its main menu.
+Check the callback's initialization prerequisites and slot state before blaming
+interrupt delivery or bypassing a wait. Calibrate the waited-on routine from
+a unique checked RAM prefix rather than the arbitrary sampled PC: a pause in
+a relocated extender gate need not match pristine bytes. Evidence: PG
+`analysis/executable.md`, "Startup timer dependency resolved" (2026-10-06).
+
+**A polling-heavy DOS log can fill before the resource transition.** Panzer
+General's menu-to-Poland trace hit the shared plugin's 400,000-call limit;
+retain its truncation flag rather than treating it as complete file history.
+A separate breakpoint at a byte-checked, relocated file-open entry captured
+the six requests in the selected window, with caller return addresses and
+resource hashes. Entry requests do not prove successful handles or reads, and
+resources outside that boundary remain in the dependency investigation.
+Instrumentation also shifts wall time: confirm the retained tactical screen
+instead of inferring the phase from accepted inputs or a schedule timestamp.
+Evidence: PG `analysis/scenario-route.md` and `work/drive_menu.py` (2026-10-06).
+
+**A replay cursor is not a unique capture identity.** Comanche's four attract
+passes reuse the cursor while changing mission resources and camera. Its
+Falcon frame probe now gates publication on cursor, active replay, pass and
+camera, then rechecks the dumped fields before accepting the capture. Retain
+program, ROM, emulator and frame hashes with the invocation; invalidate an
+earlier success report before rerunning so a timeout cannot leave stale proof.
+The identity rejection tests are harness checks, not DOS parity evidence.
+Evidence: CMN `tools/capture-target-frame.py` and
+`tools/test-capture-target-frame.py` (2026-10-05).
+
 **A repeated breakpoint needs a step, or the guest never moves.** Everything
 above concerns *one* stop. The moment you want a trace — the same address, over
 and over, one row per hit — QEMU re-tests the breakpoint at the start of the
