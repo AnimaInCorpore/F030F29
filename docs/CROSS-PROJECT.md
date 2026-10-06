@@ -1721,6 +1721,59 @@ load-bearing policies, so their names are known here:
   remains unchanged. F030CT is an external technique provider, not a new
   `TARGETS` member or a claim of verified DOS behaviour. See the source-backed
   review in `../F030Method/analysis/f030ct-translator-review.md` (2026-09-27).
+- **A bounded x86-32 to 68000 translator exists in PG; it is not a shared tool.**
+  `tools/x86x/translate.py` (PG, 2026-10-06) decodes a function's bytes from the
+  hashed LE image, finds its instructions by reachability from the entry (an
+  inventory span can be padded or overrun: one 55-byte function had a 5,343-byte
+  span), lowers them through an explicit rule table and refuses any instruction
+  without a rule. A conditional jump is accepted only directly after its
+  flag-setting instruction, lowered to the matching 68000 instruction; carry
+  conditions after `inc`/`dec` are refused. Every emitted line carries the DOS
+  address and bytes, and an ABI shim can map a hand port's calling convention onto
+  the generated body so that `--translated` drops it into the existing native
+  fixture harness. Five functions (three RNG, two string helpers) then pass the
+  same DOS fixtures, and changing one constant in the generated source makes the
+  gate fail (run the unmutated control first: an absent output file can be a
+  broken harness, not a detection). It has saved no work yet, because those
+  functions already had hand ports; the first real test is a function nobody
+  ported by hand. Fit: the instruction frontend suits 32-bit protected-mode
+  builds (PG, TIE, MC, ICR, CMN's flat program, L386); the loaders, relocation
+  sources and containers differ per build. The 16-bit real-mode builds (POR, UW1,
+  UW2, F29, F3, LOL, WC1) need a different frontend (segments, overlays) and are
+  not covered. Keep per-build data (executable hash, function inventory,
+  relocation source, ABI shims) in each project and extract a shared tool only
+  after a second consumer validates its own contracts (DEPENDENCIES.md). Evidence:
+  PG `analysis/x86-translation.md`.
+- **Read `$+N` in a nasm-style listing as relative to the instruction's own
+  address.** PG's `object1.asm` prints `call $+278156`; taking it relative to the
+  next instruction put every call target five bytes past the real function start
+  and made every callee look like a "+0x5" entry. Use the decoder's resolved
+  target, or add the offset to the instruction address, and check one call whose
+  target is a known function start.
+- **Find the code that draws into a bitmap with write watchpoints on sample
+  pixels.** GDB `Z2` on a few pixels of the destination bitmap (terrain, unit,
+  text, border, panel) stops the guest after each write; record EIP, registers
+  and the EBP chain and map them to the function inventory. In PG this showed that
+  the static frame is recomposed continuously by one compositor through one
+  clipped sprite primitive, and that the map view is a separate 555 x 426 bitmap
+  the screen is copied from. Arm the watch only for the phase of interest, since
+  a pixel rewritten every frame slows the guest enough to move a wall-clock input
+  schedule; extend the schedule instead. A watched pixel rewritten with the same
+  value is a refresh, not drawing: record the sampled values to see real changes.
+  Read bitmap sizes as `maxX + 1` by `maxY + 1`: `0x22A` is 555 wide, and the
+  556 x 427 slip made a correct bitmap look unrelated to the screen. On
+  `-M pc -vga std` the emulated VGA's linear framebuffer is PCI BAR0 (`0xFD000000`);
+  `pmemsave` of it gives exact screen indices (checked equal to `screendump`
+  through the palette), which a PNG screenshot cannot.
+- **Native Falcon test chain on a Windows host** (PG, 2026-10-06). vasm sources
+  need explicit section types (`section data,data`, `section bss,bss`): an untyped
+  section makes vlink's `ataritos` target fail with error 138. Give Hatari a bare
+  `.TOS` filename with the working directory set, since an absolute path stops
+  the autostart (no output file, exit status 0). The MSYS2 Hatari build needs
+  `C:\msys64\ucrt64\bin` on `PATH` or it exits silently. Pass QEMU monitor
+  commands forward-slash paths: backslashes break `screendump` and `pmemsave`.
+  Mixed toolchains from sibling checkouts may not run (one vlink needs a missing
+  DLL, another rejects the target): try each and record the working pair.
 - **Reuse the Falcon audio work before writing a sound engine.** F030OPL2
   runs a nine-voice OPL2 on the DSP (49.17 kHz) with a stamped-register-write
   decoder and a register-trace player, and already plays Miles XMIDI converted to
