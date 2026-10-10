@@ -26,10 +26,13 @@ non-authoritative reconstruction. Its 1996 Win32 source can accelerate reading
 the 1990 DOS build, but the DOS binary decides behaviour. METHOD.md §4.2
 requires the reconstruction's build and fidelity grade to be cited in the
 function record, and any difference to be resolved against DOS evidence.
-As of 2026-08-26 the `F030WC1` working copy in this workspace is a stub — no
-game media, no `../wc1-re`, no analysis tree, no git history — so its row
-records prior findings that cannot currently be re-verified here (see the WC1
-adopt list).
+Correction, 2026-10-10: the 2026-08-26 description of `F030WC1` as a "stub"
+is historical. The current checkout contains a substantial native title,
+flight and cannon-combat prototype, resource tooling and analysis/function
+records (`F030WC1/README.md`, `PORTING.md`). Its complete DOS/browser route and
+diagnostic flight depth merge remain Unproven. It still has no Git repository
+or remote; publication is skipped at the owner's request. Available source and
+target demonstrations do not replace the selected DOS build's evidence.
 
 The other twelve hit the same problems in different orders. This document collects the
 techniques that transfer, each attributed to where it was learned so the
@@ -1806,6 +1809,12 @@ load-bearing policies, so their names are known here:
   remains unchanged. F030CT is an external technique provider, not a new
   `TARGETS` member or a claim of verified DOS behaviour. See the source-backed
   review in `../F030Method/analysis/f030ct-translator-review.md` (2026-09-27).
+- **A host interpreter's command name is part of the build dependency.**
+  CMN's Bash build invokes `python`; a host exposing only `python3` needs an
+  explicit launch adapter. An interactive alias need not exist in the child
+  shell. Preserve the interpreter, launch environment and build output identity
+  together; a wrapper changes the host mechanism, not DOS game behaviour.
+  Tested reproduction: CMN `tools/README.md` (2026-10-10).
 - **STEArcade supplies optimization and test patterns, not DOS semantics.**
   Its shared compiler combines conservative return/flag analysis, native CCR
   reuse and sequence merging guarded by real entry boundaries; unexpected
@@ -2192,6 +2201,27 @@ load-bearing policies, so their names are known here:
   and target boundaries, outside the semantic function path. A boundary guard
   required to prevent a host crash is a documented target artefact, never
   invented DOS error handling.
+- **A zero high dividend permits a narrower native divide.** A DOS
+  `xor edx,edx; div` consumes a 32-bit unsigned dividend despite the instruction's
+  EDX:EAX interface. On m68k, explicitly select the 32-bit quotient/remainder
+  form when that is the recovered contract; a 64-bit dividend instruction may
+  assemble for MC68060 yet fail to execute there. CMN's debrief number writer
+  now uses `divul.l`; 80 fresh DOS number cases and 80 percentage cases match
+  on both native CPU cores and JavaScript, while the old writer fails to reach
+  the native test exit on MC68060. Evidence: CMN
+  `analysis/functions/browser-attract.md#native-debrief-numeric-contracts-2026-10-10`
+  and `tools/check-falcon-debrief.py`. Do not narrow a genuinely nonzero high
+  dividend or infer whole-route parity from a function test.
+- **A record stride is not its exchange length.** CMN's native ranking helper
+  correctly rounded the 43-byte name record's exchange to 40 bytes, but applied
+  that rule to ten-byte campaign rows too. DOS exchanges two dwords and a word
+  there. Keep the stride and bytes exchanged separate; test every caller of a
+  shared helper against captured outputs. Fresh DOS/JavaScript cases and an
+  extracted production routine in Hatari exposed the native error; the old
+  source fails at the ninth byte of a progress row. Evidence: CMN
+  `analysis/functions/browser-attract.md#native-roster-correction-2026-10-10`
+  and `tools/check-falcon-roster.py`. This is function evidence, not whole-game
+  or hardware certification.
 - **Merge recovered implementations at their contracts, including consumers.**
   CMN's 2026-09-30 audit/mainline merge combined a byte-sized DOS terrain
   silhouette with a separate word-sized target-view archive. Sprite clipping

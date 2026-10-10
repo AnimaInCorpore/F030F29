@@ -16,9 +16,10 @@ The rasterizer is structured so that a later switch to 8 bit plus C2P stays a
 localised change — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 The hashed DOS `X.EXE` binary and captured DOS execution remain the behavioural
-authority. Every function represented in browser, 68030 or DSP code has the
-`METHOD.md` §4.2 contract/difference record and a deterministic browser
-fixture. The browser harness is used to investigate a function's role and
+authority. Every function represented in browser, 68030 or DSP code requires
+the `METHOD.md` §4.2 contract/difference record and a deterministic browser
+fixture before entering a supported route; this is a requirement, not an audit
+result for the existing prototype. The browser harness is used to investigate a function's role and
 side effects before target implementation, then to compare DOS → browser →
 Falcon results; its hypotheses do not overrule DOS.
 
@@ -47,7 +48,7 @@ far is written up in `docs/`:
 | Document | Contents |
 |---|---|
 | [ENGINE.md](docs/ENGINE.md) | what is in `src/`, how to build it and how to check it |
-| [HUD.md](docs/HUD.md) | the flight HUD readout — units, placeholder data, verifying it |
+| [HUD.md](docs/HUD.md) | custom flight HUD readout — DOS-width flight state/units and verification |
 | [MENU.md](docs/MENU.md) | the start menu — font, navigation, verifying input headlessly |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the port divides work between the 68030 and the DSP |
 | [GAME-LOOP.md](docs/GAME-LOOP.md) | the per-frame update, the timing, the state variables |
@@ -56,7 +57,7 @@ far is written up in `docs/`:
 | [X86DISASSEMBLE.md](docs/X86DISASSEMBLE.md) | how to go about disassembling a DOS binary, from what this one cost |
 | [RE-WORKFLOW.md](docs/RE-WORKFLOW.md) | picking this up cold — tools, the session workflow, patterns and traps |
 | [REASSEMBLY.md](docs/REASSEMBLY.md) | byte-exact X.EXE reassembly ratchet and residue inventory |
-| [CROSS-PROJECT.md](docs/CROSS-PROJECT.md) | techniques shared by the eleven projects in `../F030Method/README.md` — generated from the parent repository |
+| [CROSS-PROJECT.md](docs/CROSS-PROJECT.md) | techniques shared by the thirteen projects in `../F030Method/README.md` — generated from the parent repository |
 | [RE-NOTES.md](docs/RE-NOTES.md) | `X.EXE` memory layout, resolved indirect dispatchers, inline-string idiom |
 | [ARCHIVE-FORMAT.md](docs/ARCHIVE-FORMAT.md) | container format of `RETAL.00` / `RETAL.01` |
 | [RESOURCE-FORMATS.md](docs/RESOURCE-FORMATS.md) | RLE compression and the seven resource type handlers |
@@ -162,11 +163,12 @@ tools/      build, runner and frame-grab scripts; toolchain.sh locates the tools
 img/        genuine DOS 6.22 floppies + the built f29.hdd (ignored, no game data in git)
 ```
 
-## Status
+## Status — reviewed 2026-10-10
 
 The reverse engineering is broad: the archive, the compression, the image,
-model and world formats and the sound driver are all decoded, and the
-disassembly reaches 44.6 % of `X.EXE`.
+model and world formats and the sound driver have recovery records. Historical
+disassembly coverage figures describe particular analysis passes, not current
+gameplay completion or fidelity.
 
 The port itself is in active reconstruction. The engine renders an F29 scene -
 a model library plus placed instances, culled and depth-sorted on the 68030,
@@ -174,7 +176,12 @@ one DSP round trip each - over a drawn horizon at 320x240 true colour in Hatari,
 measured at **25 fps** for sixteen distant objects and **11.6 fps** for one
 that fills the screen. A HUD, start menu, and DOS-width scalar/attitude/
 position flight core exist (see [HUD.md](docs/HUD.md), [MENU.md](docs/MENU.md));
-full device/stall/game logic and the cockpit panel remain open.
+full device/stall/game logic and the cockpit panel remain open. The menu/HUD
+are custom presentation and the horizon/scene renderer is a prototype; their
+existence does not establish the original DOS picture or a complete mission.
+No connected DOS-validated JavaScript game reference or fully validated Falcon
+game route is established by these records. This documentation review did not
+rerun the benchmarks or make stock-hardware performance claims.
 
 Measuring rather than calculating already paid for itself once. The first
 bottleneck was not the video mode the arithmetic pointed at, but the fact that

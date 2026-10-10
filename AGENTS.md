@@ -23,7 +23,7 @@ translation is neither required nor sufficient.
 Decode → Disassemble + Prove → Understand → Port. Byte equality proves an
 encoding or reconstruction; it does not by itself prove code classification,
 runtime behaviour, or port fidelity. The generated `docs/CROSS-PROJECT.md`
-contains transferable techniques for the eleven projects in the parent manifest.
+contains transferable techniques for the thirteen projects in the parent manifest.
 
 For disassembly, seed only evidence-backed targets, keep proven data guarded,
 and classify residue instead of treating all undecoded bytes as instructions.

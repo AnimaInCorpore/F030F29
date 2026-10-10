@@ -1,5 +1,12 @@
 # The Falcon engine
 
+Status reviewed 2026-10-10: this is a Hatari-running scene/flight prototype,
+not a completed DOS-faithful game. DSP geometry, blitter fills, original model
+data and the flight-state core are implemented; the menu/HUD and generated
+horizon include custom presentation. Full device/stall/game logic, original
+cockpit and connected DOS/browser/native validation remain open. Timings below
+are existing Hatari measurements, not a new benchmark or Falcon hardware result.
+
 The renderer is not written from scratch. It is the engine from the sibling
 project [`f030dsp3d`](../../f030dsp3d) — own code, originally from 1994 —
 brought into `src/` and simplified from a demo into something a game can use.
