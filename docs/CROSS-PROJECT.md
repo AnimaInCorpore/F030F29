@@ -1233,6 +1233,91 @@ chained entry/exit pairs then dumps state before and after every call.
 dropped commands — on macOS and Linux the stub is dependable, and for
 breakpoints there is no QMP alternative to fall back on.)*
 
+### Diffing the whole per-slot state at the beat between two stages
+
+A frame pair says *something* differs; it rarely says which state is wrong,
+and pixel scores barely move when the cause is upstream of the picture. For an
+engine that keeps its entities in parallel arrays (Comanche's object table is
+23 byte and dword arrays indexed by slot), stop the original at the one
+instruction between "update every entity" and "draw them" and read **every**
+array, one row per frame. Stop the port at the matching label, dump its table,
+and join the two by the replay cursor. A field-by-field table then answers in
+one run what weeks of image comparison had not: the factory installed the
+*wrong state* on every placement of the commonest type, so nothing moved,
+nothing aimed and nothing fired. After the fix the same table showed
+`active/altitude/health/hold/phase/speed/timer` equal in 285/285 passes for
+every slot, and the only residue was the state that cannot match - a gate on
+a wall-clock PRNG - plus a position-precision effect that flips an equality
+test 1,800 ticks in. Capture the draw side the same way (break at the blit
+every sprite ends in; slot, frame, column, row, scale): "the tank is drawn
+with the same frame and scale, 30 rows lower" is a different bug from "the
+tank is not drawn". *(CMN `work/trace_replay_flight.py --objects/--sprites`,
+`tools/trace-falcon-objects.py`, 2026-10-06.)*
+
+**Match the oracle's configuration before scoring a frame pair.** CMN's
+original runs the install's MEDIUM detail; the port ships HIGH. The same build
+scored 62,624 of 76,800 pixels at HIGH and 67,436 at MEDIUM from one staged
+setting byte, and a model that "does not appear" at one detail level was an
+occlusion difference of the other. Stage the oracle's setting for comparison
+runs; keep the shipped one for shipping.
+
+**A validator the port added is a second behaviour.** CMN's sprite-bank
+validator demanded a palette offset of at least 769 bytes. The original's loader
+checks nothing there, and two valid small banks (chaff, flare) failed it,
+silently, so the launchers that needed them found no model. When a load
+"fails" in the port and not in the original, look for the port's own check
+before the data.
+
+**Two loaders that look the same may differ by one call.** CMN has two bank
+palette installers; one runs the mission's palette variant (night vision) before
+the nearest-colour remap and one does not, and which one each bank goes through
+is only visible in the call opcodes - the range holding the weapon banks was
+"not reached" in the static listing. Scan the raw image for `E8 rel32`
+targets in an undecoded range rather than inferring from the neighbours: the
+answer split the weapon banks four to two, and the fireball staying orange
+while the shells turn green is the proof.
+
+**Hatari's debugger: arm from the program's own start, and know its limits.**
+`symbols` fails with "TEXT section size differs" until the program is resident,
+so a fixed-VBL arming either races the load or misses the event. Start the
+program through the GEMDOS drive (`--harddrive DIR --auto C:\PROG.TOS`) and chain
+`b GemdosOpcode = $4b && OsCallParam = 0 :trace :once :file p.ini` ->
+`b pc = TEXT :trace :once :file arm.ini` -> `symbols ...` plus the real
+breakpoints. Symbol names in a DRI/GST table are cut to 22 characters and a
+second symbol at an address already named is dropped; a breakpoint on either
+fails with the unhelpful "invalid variable/register/symbol name". Conditions
+accept `=`, `!`, `<`, `>` and `&&` (not `>=`/`<=`), and `(sym).l` reads memory;
+`m` takes no register arithmetic, but `savebin file a0 $size` dumps from a
+register. *(CMN `tools/capture-target-frame.py`, 2026-10-06.)*
+
+### Measure the misregistration of a frame pair before reading any code
+
+When a frame pair scores 88% the fraction says nothing about *what* is wrong.
+Search, per 10-row band, the integer (dx, dy) that makes the port equal the
+original and print the best match: a band that is 100% identical at one exact
+shift is a registration fault, not a content one, and the shifts name the
+mechanism. CMN's cockpit frame showed the far ridge exactly +2 pixels and the
+near ground exactly -2 against the original, 100% and 97% in each; the
+original does a rotation as two shears - the vertical one per column that the
+port had, and a horizontal one per row, in per-row displacement records the
+same unrolled loop writes beside the column offsets - and the blit copies each
+row through its record. The port had half of it. Fitting the records against
+slope 25 matched all 192 of them. The same pass found, by the same search, a
+left map sampled from a basis one table step stale, an object depth kept six
+bits short, a 168-row transfer window the port's sprites ignored (a near
+explosion painted over the title art the external views leave below it), two
+HUD bars baked into the art, and a clamp the original does not have. Ten more
+frames then scored 96-99.7%, and the first frame of every attract pass 99.9%.
+
+**Know which iteration a captured frame is.** The original's capture is the
+frame rendered in the iteration whose record consumption brings the cursor to the
+wanted value - terrain and objects from the state before the tick, console drawn
+after it - and its flight-state rows are sampled at a different instruction than
+its sprite rows are keyed by. Join on the wrong one and a correct port looks
+broken (and a broken one looks fixed). Capture frames **not** during a wall-clock
+effect (a screen shake driven by the timer ISR): the page and the sampled phase
+disagree by construction. *(CMN, 2026-10-07.)*
+
 ## 7. Traps that cost real time
 
 - **Inspect executable alignment padding before benchmarking it.** A mnemonic
@@ -1721,6 +1806,19 @@ load-bearing policies, so their names are known here:
   remains unchanged. F030CT is an external technique provider, not a new
   `TARGETS` member or a claim of verified DOS behaviour. See the source-backed
   review in `../F030Method/analysis/f030ct-translator-review.md` (2026-09-27).
+- **STEArcade supplies optimization and test patterns, not DOS semantics.**
+  Its shared compiler combines conservative return/flag analysis, native CCR
+  reuse and sequence merging guarded by real entry boundaries; unexpected
+  interior entries trap. Opcode and sequence tests use the production compiler.
+  Build comparisons align guest execution checkpoints, and profiling attributes
+  target cycles to source PCs per guest frame. Retain independent DOS evidence,
+  the semantic JavaScript reference and proof for any excluded stack/flag bytes.
+  Reported speedups are not Falcon measurements or x86 predictions. See
+  `../F030Method/analysis/stearcade-translator-review.md` (2026-10-10).
+  Implemented tools are in `../F030Method/validation/`, consumed by PG's bounded
+  translator/fixture gates and Comanche's replay comparison. The instruction
+  bench measures synthetic sequences only; no game-speed gain or new supported
+  function is claimed. Results: `analysis/stearcade-implementation.md` in Method.
 - **A bounded x86-32 to 68000 translator exists in PG; it is not a shared tool.**
   `tools/x86x/translate.py` (PG, 2026-10-06) decodes a function's bytes from the
   hashed LE image, finds its instructions by reachability from the entry (an
