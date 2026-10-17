@@ -30,8 +30,9 @@ Correction, 2026-10-10: the 2026-08-26 description of `F030WC1` as a "stub"
 is historical. The current checkout contains a substantial native title,
 flight and cannon-combat prototype, resource tooling and analysis/function
 records (`F030WC1/README.md`, `PORTING.md`). Its complete DOS/browser route and
-diagnostic flight depth merge remain Unproven. It still has no Git repository
-or remote; publication is skipped at the owner's request. Available source and
+diagnostic flight depth merge remain Unproven. Correction, 2026-10-14: it is
+now a local Git repository (no remote) and, at the owner's request, part of
+the F030DOS publication copy. Available source and
 target demonstrations do not replace the selected DOS build's evidence.
 
 The other twelve hit the same problems in different orders. This document collects the
@@ -2201,6 +2202,17 @@ load-bearing policies, so their names are known here:
   and target boundaries, outside the semantic function path. A boundary guard
   required to prevent a host crash is a documented target artefact, never
   invented DOS error handling.
+- **A cell reader may return pointer bits above its logical value.** PG's
+  `sub_000484D8` loads AL or AX without clearing the full EAX pointer first.
+  Eleven fresh DOS witnesses confirm that byte layers return the pointer's high
+  half plus the byte, while word layers retain the selected address's high half
+  plus the word. EDX and scratch pointer stores also differ by element size.
+  JavaScript and relocated native memory must preserve virtual pointer values
+  when those bits are observable; comparing only the cell's low byte/word hides
+  a contract difference. Preserve partial-register effects and compare complete
+  registers and memory writes, then narrow only at a proven consumer boundary.
+  Evidence: PG `analysis/functions/sub_000484D8.md`, DOS/JS/native fixtures,
+  2026-10-10. This does not close table producers or connected game flow.
 - **A zero high dividend permits a narrower native divide.** A DOS
   `xor edx,edx; div` consumes a 32-bit unsigned dividend despite the instruction's
   EDX:EAX interface. On m68k, explicitly select the 32-bit quotient/remainder
@@ -2268,6 +2280,71 @@ load-bearing policies, so their names are known here:
   before replay state or a target span exists, record it as a platform seam and
   keep it separate from DOS frame-parity evidence. *(CMN
   `analysis/functions/browser-attract.md#mfd-map`, 2026-09-08.)*
+- **Ship no game data: read the original's tables from the player's own
+  executable at startup.** CMN's Falcon program used to carry about 90 KB
+  generated from the local install (sine, font, texts, roster defaults, view
+  and sprite tables, the `.DTL` ring tables). `src/origexe.s` now reads the
+  player's `COMANCHE.EXE` before init, checks its size (61,154 bytes) and a
+  checksum, LZEXE-unpacks the load image and copies 44 tables from the flat
+  addresses the host reference uses; a missing or different file prints one
+  line naming it and exits. `tools/check-orig-exe-load.py` dumps every table
+  in Hatari and compares it with the reference (shifting one address fails
+  it), and a scan found no 32-byte block of the original left in the program.
+  This is what lets a port's program be published in F030DOS, which commits no
+  game data; a source `dc` table copied from the original is the same problem
+  in a smaller form, so scan the sources for the image's bytes too. *(CMN
+  d9047fd, 16cae99, 2026-10-14.)*
+- **F030OPL2 can be linked into a game; this is how CMN did it.** The music
+  driver was ported first with a single register sink (`music_opl_write`) and
+  checked against the original's OPL2 captures write for write
+  (`tools/check-falcon-music.py`: 23 captures, 46,499 register writes, both
+  CPUs). With no synthesiser the status port reads as no card, so detection
+  fails as on a PC without one and the default build keeps its timing. An
+  `OPL2=1` build assembles F030OPL2's decoder and stream host from the sibling
+  checkout (GPL-3.0: linked from there, never copied in), stages the kernel's
+  `OPLDATA.BIN`, decodes the driver's writes into the DSP stream and carries
+  the digital effects in it as PCM, refilled from Timer C. Hatari's emulated
+  DSP streamed 149.3 s of sound in 149.3 s with no protocol error; not
+  auditioned against DOS, not run on hardware. *(CMN 711666e, eebbaf3,
+  `analysis/functions/sound-driver.md` §13, 2026-10-15.)*
+- **A 68060 image beside the 68030 one is one switch, three changes and a
+  cache rule.** `TARGET_CPU=68060` in CMN's `tools/build-run.sh` selects
+  software replacements for the 64-bit `muls.l`/`divs.l` forms the 68060
+  traps, links with PRG flags 7 so TOS loads the program and its BSS into
+  TT-RAM (scanout pages and DMA buffers stay `Mxalloc`'d in ST-RAM; without
+  TT-RAM TOS ignores the bits), and pushes the data cache (`CPUSHA DC`) before
+  a page is shown and at every VBL, since a copyback-cached frame never
+  reaches ST-RAM otherwise. Check that both images stay byte-identical where
+  the switch should not matter. The cache push has never run on hardware:
+  Hatari models no 68060 cache. *(CMN a3a010d,
+  `docs/PERFORMANCE-2026-10-14-68060.md`, 2026-10-14.)*
+- **Build a report into the first hardware test.** CMN's `HWTEST=1` links
+  `src/hwtest.s`, which only reads counters and writes `HWTEST.TXT` at quit:
+  the cookie jar, TOS, the monitor and Videl setup chosen, CACR and PCR, the
+  program's load address, the refresh rate measured from VBLs over the 200 Hz
+  timer, frames per second and a VBL histogram per kind of frame, and the DSP
+  music delivered against the time that passed. Count the first frame after a
+  title screen, menu or load as not timed, or one 54-VBL frame swamps the
+  average. Keep the image byte-identical without the flag, and ship the
+  tester a written run order (`docs/HARDWARE-TEST.md`) so every report has
+  the same parts. Not yet run on a real Falcon. *(CMN 3a95862, 2026-10-15.)*
+- **A bot that plays the port finds what fixtures do not.** CMN's
+  `work/bot` drives the game under Hatari with real IKBD keys and reads state
+  through the debugger: it flies, locks, fires and defends, plays a campaign
+  in order, and dumps Videl memory for screenshots. It found three live-play
+  faults no contract check covered, and with `start_state.py` and the
+  original under QEMU it compared all 20 mission starts slot by slot. It
+  needs care of its own: a stale menu key reached *Exit to DOS* until the bot
+  waited for each key to be consumed. *(CMN 8ce100d, 20a3784, 3081bde,
+  2026-10-14..15.)*
+- **Hatari measurement traps found while recording.** An AVI's frame rate is
+  fixed when recording starts, so a recording started during TOS's 50 Hz
+  screen labels the game's 60 Hz frames 50 fps (re-time with
+  `setpts=PTS*50/60 -r 60`). Hatari's 68060 charges about a cycle per
+  instruction and nothing for caches, pairing or the shared ST-RAM bus, so
+  its frame rates (CMN: about 20 fps, Hatari 2.6.1-devel binary of
+  2026-09-22) are estimates for hardware in either direction. *(CMN
+  `docs/HARDWARE-TEST.md`, 2026-10-15.)*
 - **Browser file access goes through a virtual DOS filesystem.** The semantic
   core uses deterministic named-byte-file `open`/`read`/`seek`/`tell`/`close`
   semantics. IndexedDB may persist imported binaries, caches and saves;
